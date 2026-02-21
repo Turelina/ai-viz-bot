@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+# Игнорируем все логи, но оставляем структуру папок и документацию
+logs/**/*.json
+logs/**/*.log
+logs/**/*.txt
+# Но коммитим README и шаблоны
+!logs/README.md
+!logs/COMMON_ISSUES.md
+!logs/error_template.json
+!logs/example_usage.py
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Supabase local
+.supabase/
+
+# Claude Code local settings
+.claude/
+
+# Temporary files
+temp/
+tmp/
+*.tmp

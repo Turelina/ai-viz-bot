@@ -1,0 +1,174 @@
+# Конфигурация AI-агентов системы
+
+agents:
+  # 1. Агент-Слушатель
+  listener:
+    name: "Listener Agent"
+    description: "Классифицирует входящие сообщения и направляет их"
+    model: "claude-sonnet-4-5-20250929"
+    max_tokens: 3000
+    temperature: 0.3
+    timeout: 30
+    retry_attempts: 2
+    features:
+      - message_classification
+      - intent_detection
+      - routing
+
+  # 2. Агент-Менеджер
+  manager:
+    name: "Manager Agent"
+    description: "Общается с клиентами, собирает требования, управляет заказом"
+    model: "claude-opus-4-6"
+    max_tokens: 15000
+    temperature: 0.7
+    timeout: 60
+    retry_attempts: 3
+    features:
+      - requirements_gathering
+      - pricing_calculation
+      - quality_control
+      - client_communication
+    context:
+      max_messages: 10
+      include_order_summary: true
+
+  # 3. Агент-Vision
+  vision:
+    name: "Vision Agent"
+    description: "Анализирует скриншоты оплаты"
+    model: "gemini-3-pro"
+    max_tokens: 8000
+    temperature: 0.1
+    timeout: 45
+    retry_attempts: 3
+    confidence_threshold: 0.9
+    features:
+      - payment_verification
+      - image_analysis
+      - amount_extraction
+      - date_extraction
+
+  # 4. Агент-Инженер
+  engineer:
+    name: "Engineer Agent"
+    description: "Создает технические промпты для генераторов изображений"
+    model: "claude-opus-4-6"
+    max_tokens: 10000
+    temperature: 0.5
+    timeout: 60
+    retry_attempts: 2
+    features:
+      - prompt_engineering
+      - parameter_selection
+      - style_optimization
+    supported_generators:
+      - imagen3
+      - dalle3
+      - midjourney
+
+  # 5. Агент-Генератор
+  generator:
+    name: "Generator Agent"
+    description: "Управляет процессом генерации изображений"
+    model: null  # Почти без AI в MVP
+    max_tokens: 1000
+    temperature: 0.3
+    timeout: 15
+    mode: "manual"  # manual | auto
+    features:
+      - instruction_generation
+      - platform_selection
+      - status_tracking
+
+  # 6. Агент-Доставщик
+  delivery:
+    name: "Delivery Agent"
+    description: "Доставляет результаты клиентам"
+    model: "claude-sonnet-4-5-20250929"
+    max_tokens: 3000
+    temperature: 0.6
+    timeout: 30
+    retry_attempts: 2
+    features:
+      - file_delivery
+      - feedback_collection
+      - completion_notification
+
+# Глобальные настройки для всех агентов
+global_settings:
+  # Кеширование промптов
+  enable_prompt_caching: true
+  cache_ttl: 3600
+
+  # Логирование
+  log_all_interactions: true
+  log_token_usage: true
+
+  # Обработка ошибок
+  default_retry_attempts: 2
+  default_timeout: 45
+  exponential_backoff: true
+
+  # Контекст
+  default_max_context_messages: 10
+  compress_old_context: true
+
+  # Безопасность
+  sanitize_inputs: true
+  validate_outputs: true
+
+# Приоритеты моделей (fallback)
+model_fallbacks:
+  claude-opus-4-6:
+    - claude-sonnet-4-5-20250929
+    - claude-haiku-4-5-20251001
+
+  claude-sonnet-4-5-20250929:
+    - claude-haiku-4-5-20251001
+
+  gemini-3-pro:
+    - gemini-1.5-pro
+
+# Лимиты использования
+usage_limits:
+  # Лимиты токенов
+  max_tokens_per_message: 5000
+  max_tokens_per_order: 50000
+  max_tokens_per_day: 500000
+
+  # Лимиты запросов
+  max_requests_per_minute: 30
+  max_requests_per_hour: 500
+
+  # Лимиты затрат
+  max_cost_per_order_usd: 2.0
+  max_cost_per_day_usd: 50.0
+
+# Мониторинг и метрики
+monitoring:
+  # Что отслеживать
+  track_response_time: true
+  track_token_usage: true
+  track_success_rate: true
+  track_errors: true
+
+  # Пороги для алертов
+  alert_on_slow_response: 60  # секунд
+  alert_on_high_token_usage: 40000  # на заказ
+  alert_on_error_rate: 0.1  # 10%
+
+# Оптимизация токенов
+token_optimization:
+  # Сжатие контекста
+  compress_messages: true
+  max_message_length: 2000
+
+  # Умное резюмирование
+  summarize_old_context: true
+  summary_threshold_messages: 20
+
+  # Кеширование
+  cache_system_prompts: true
+  cache_user_preferences: true
+  cache_pricing_tables: true

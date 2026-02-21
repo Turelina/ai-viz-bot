@@ -1,0 +1,12 @@
+# Telegram Bot
+python-telegram-bot==20.7
+
+# AI
+anthropic==0.18.0
+
+# Database
+supabase==2.3.0
+
+# Config
+pydantic-settings==2.1.0
+python-dotenv==1.0.0

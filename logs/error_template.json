@@ -1,0 +1,59 @@
+{
+  "timestamp": "YYYY-MM-DDTHH:MM:SSZ",
+  "error_id": "ERR-YYYYMMDD-NNN",
+  "severity": "critical | high | medium | low | info",
+  "category": "agent | system | development | database | api",
+  "agent_name": "listener | manager | vision | engineer | generator | delivery",
+  "order_id": null,
+  "user_id": null,
+
+  "error": {
+    "type": "ErrorClassName",
+    "message": "Описание ошибки на русском",
+    "code": "ERR001",
+    "details": {
+      "key": "value"
+    }
+  },
+
+  "context": {
+    "state": "current_order_state",
+    "previous_state": "previous_state",
+    "additional_info": "любая дополнительная информация"
+  },
+
+  "stack_trace": "Полный stack trace если есть",
+
+  "attempted_solution": {
+    "action": "Что было попытано сделать",
+    "result": "success | failed | partial",
+    "reason": "Почему не сработало или сработало"
+  },
+
+  "resolution": {
+    "status": "resolved | unresolved | in_progress",
+    "assigned_to": "имя разработчика или null",
+    "notes": "Заметки о решении",
+    "solution": "Как было исправлено"
+  },
+
+  "impact": {
+    "user_affected": false,
+    "order_blocked": false,
+    "system_down": false,
+    "data_lost": false,
+    "tokens_wasted": 0,
+    "cost_usd": 0.0
+  },
+
+  "recommendations": [
+    "Рекомендация 1",
+    "Рекомендация 2",
+    "Рекомендация 3"
+  ],
+
+  "related_errors": [
+    "ERR-20240115-001",
+    "ERR-20240114-042"
+  ]
+}
