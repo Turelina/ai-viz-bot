@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = Field(..., description="Anthropic Claude API key")
 
+    # Реквизиты оплаты
+    payment_card: str = Field(default="Сбербанк: 1234 5678 9012 3456", description="Реквизиты карты для оплаты")
+    payment_recipient: str = Field(default="Иванов И.И.", description="ФИО получателя платежа")
+
     # Цены
     base_price_image: int = Field(default=500, description="Базовая цена за изображение, руб")
 

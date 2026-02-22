@@ -27,6 +27,15 @@ from src.core.database import db
 
 logger = logging.getLogger(__name__)
 
+# ─── Claude клиент (синглтон) ─────────────────────────────────────────────────
+_anthropic_client: anthropic.AsyncAnthropic | None = None
+
+def _get_anthropic_client() -> anthropic.AsyncAnthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return _anthropic_client
+
 # ─── Состояния диалога с клиентом ────────────────────────────────────────────
 DESCRIPTION, STYLE, PAYMENT = range(3)
 
@@ -63,8 +72,8 @@ async def get_style(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"Стоимость: {price} ₽\n\n"
         f"Реквизиты для оплаты:\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Сбербанк: 1234 5678 9012 3456\n"
-        f"Получатель: Иванов И.И.\n"
+        f"{settings.payment_card}\n"
+        f"Получатель: {settings.payment_recipient}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"После оплаты пришлите скриншот чека:"
     )
@@ -87,6 +96,7 @@ async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
             username=user.username or user.first_name or str(user.id),
             description=full_description,
         )
+        db.save_message(order["id"], "user", full_description)
     except Exception as e:
         logger.error(f"Ошибка создания заказа в БД: {e}")
         await update.message.reply_text(
@@ -207,6 +217,7 @@ async def _confirm_payment(query, context, order_id: int) -> None:
         prompt = await _generate_prompt(order["description"])
         db.update_prompt(order_id, prompt)
         db.update_status(order_id, "prompt_ready")
+        db.save_message(order_id, "assistant", prompt)
     except Exception as e:
         logger.error(f"Ошибка генерации промпта: {e}")
         await context.bot.send_message(
@@ -253,6 +264,7 @@ async def _reject_payment(query, context, order_id: int) -> None:
 async def _start_delivery(query, context, order_id: int) -> None:
     admin_id = query.from_user.id
     pending_deliveries[admin_id] = order_id
+    db.set_delivery_admin(order_id, admin_id)
     # Убираем кнопку и просим прислать фото
     await query.edit_message_text(
         query.message.text + "\n\n📤 Отправь изображение следующим сообщением:",
@@ -281,25 +293,28 @@ async def handle_admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         caption="🎉 Ваш заказ готов! Спасибо, что выбрали нас 😊",
     )
     db.update_status(order_id, "delivered")
+    db.clear_delivery_admin(order_id)
     await update.message.reply_text(f"✅ Заказ #{order_id} доставлен клиенту!")
 
 
 # ─── Claude: генерация промпта ────────────────────────────────────────────────
 
 async def _generate_prompt(description: str) -> str:
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    client = _get_anthropic_client()
     message = await client.messages.create(
         model="claude-sonnet-4-5",
-        max_tokens=500,
+        max_tokens=800,
         messages=[{
             "role": "user",
             "content": (
-                "Ты эксперт по созданию промптов для AI-генераторов изображений "
-                "(Midjourney, DALL-E, Stable Diffusion).\n\n"
-                f"Клиент хочет: {description}\n\n"
-                "Создай детальный промпт на английском языке. "
-                "Включи стиль, освещение, детали композиции, качество рендера. "
-                "Только промпт, без объяснений и комментариев."
+                "You are an expert at writing prompts for Nano Banana Pro (Gemini 3 Pro Image by Google DeepMind).\n\n"
+                "Nano Banana Pro understands natural language — do NOT use keyword spam like '4K, masterpiece, trending on artstation'.\n"
+                "Use this structure: [Subject] + [Pose/Action] + [Setting] + [Style] + [Technical details]\n"
+                "Include: specific lighting (e.g. soft morning light, golden hour), camera details (85mm lens, f/2.8, shallow depth of field), "
+                "realistic textures and imperfections, composition details.\n"
+                "Write in flowing descriptive English, like a professional photography brief.\n\n"
+                f"Client request: {description}\n\n"
+                "Output only the prompt, no explanations."
             ),
         }],
     )
@@ -309,12 +324,37 @@ async def _generate_prompt(description: str) -> str:
 # ─── Инициализация при старте ─────────────────────────────────────────────────
 
 async def post_init(application: Application) -> None:
-    """Устанавливает меню команд в Telegram при старте бота."""
+    """Устанавливает меню команд и восстанавливает состояние после рестарта."""
     await application.bot.set_my_commands([
         BotCommand("start",  "Заказать AI-изображение"),
         BotCommand("orders", "Последние заказы (для админа)"),
         BotCommand("cancel", "Отменить текущий заказ"),
     ])
+
+    # Восстанавливаем pending_deliveries из БД после рестарта
+    try:
+        recovered = db.get_pending_deliveries()
+        if recovered:
+            pending_deliveries.update(recovered)
+            logger.info(f"Восстановлено {len(recovered)} доставок из БД: {recovered}")
+    except Exception as e:
+        logger.error(f"Не удалось восстановить состояние доставок: {e}", exc_info=True)
+
+
+# ─── Обработчик необработанных ошибок ────────────────────────────────────────
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Логирует необработанные исключения и уведомляет всех админов."""
+    logger.error("Необработанная ошибка:", exc_info=context.error)
+    error_text = (
+        f"⚠️ Критическая ошибка бота:\n"
+        f"{type(context.error).__name__}: {context.error}"
+    )
+    for admin_id in settings.admin_ids_list:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=error_text)
+        except Exception:
+            pass  # Не падаем, если и уведомление не прошло
 
 
 # ─── Сборка приложения ────────────────────────────────────────────────────────
@@ -346,9 +386,11 @@ def build_app() -> Application:
     # Фото от админа (доставка)
     app.add_handler(
         MessageHandler(
-            filters.PHOTO & filters.User(user_ids=settings.admin_ids_list),
+            filters.PHOTO & filters.User(user_id=settings.admin_ids_list),
             handle_admin_photo,
         )
     )
+
+    app.add_error_handler(error_handler)
 
     return app

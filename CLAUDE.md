@@ -87,3 +87,56 @@ All settings go in `.env` (see `.env.example`). Key variables:
 - `ENVIRONMENT` — `development` or `production`
 
 **Payment details** are hardcoded in `bot.py:66-67` — replace `Сбербанк: 1234 5678 9012 3456` and `Иванов И.И.` with real payment details before going live.
+
+## Rules for Claude Code
+
+These rules govern how Claude Code should behave when working in this repository. Follow them strictly.
+
+### Secrets & Environment
+
+- **Never read, print, or expose `.env` contents.** If the user asks to debug env variables, suggest they check values themselves.
+- **Never hardcode secrets** (tokens, API keys, Supabase URLs, admin IDs) directly in source code. All secrets must come from `.env` via `config/settings.py`.
+- **Never commit `.env`** — it is in `.gitignore` and must stay there.
+
+### Admin Security
+
+- **Always validate admin access** via `TELEGRAM_ADMIN_IDS` before executing any admin action. Never trust `user_id` from message context alone without this check.
+- **Never add new admin commands** without updating the admin ID check. The check lives in `bot.py` — find it before adding new handlers.
+
+### Database Safety
+
+- **Never construct raw SQL strings with user input.** Supabase client uses parameterized queries — keep it that way.
+- **Never delete or modify orders without a status check.** Orders follow a strict state machine: `awaiting_payment` → `prompt_ready` → `delivered` (or `cancelled`). Skipping states breaks consistency.
+
+### Bot Architecture
+
+- **Do not break the `ConversationHandler` state machine.** It is the core of the client flow. Adding or removing states without tracing all transitions will cause silent failures.
+- **Remember: `pending_deliveries` is in-memory and not persisted.** Do not treat it as a reliable source of truth across restarts. If you add persistence, update this note.
+- **Do not add new Telegram handlers** without checking for conflicts with existing `ConversationHandler` states.
+
+### Git & File Operations
+
+- **Never force-push** (`git push --force`) without explicit user confirmation.
+- **Never delete files or branches** without explicit user confirmation.
+- **Never commit changes** unless the user explicitly asks. Propose the commit message and wait for approval.
+- **Never skip pre-commit hooks** (`--no-verify`) unless the user explicitly requests it.
+- **Never amend published commits** — create a new commit instead.
+
+### Code Quality
+
+- **Read the file before editing it.** Never suggest changes to code you haven't read.
+- **Do not create new files** unless they are strictly necessary. Prefer editing existing files.
+- **Do not over-engineer.** Only implement what was explicitly requested. No extra features, no premature abstractions, no unnecessary refactoring.
+- **Do not add comments or docstrings** to code you did not change.
+- **Do not add error handling for scenarios that cannot happen** in this codebase.
+
+### Known Issues & Past Mistakes
+
+> This section is updated as bugs are found and fixed. Each entry prevents the same mistake from being reintroduced.
+
+*(No entries yet — add here when a bug is found and fixed, with a short description of what went wrong and why.)*
+
+**Format for new entries:**
+```
+- [YYYY-MM-DD] **Short title**: What the bug was, what caused it, what the fix was.
+```

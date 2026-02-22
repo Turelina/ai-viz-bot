@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS orders (
     description TEXT,
     status TEXT DEFAULT 'new',
     prompt TEXT,
+    delivery_admin_id BIGINT,  -- какой админ сейчас доставляет (NULL = никто)
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -30,11 +31,21 @@ CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_messages_order_id ON messages(order_id);
 """
 
+MIGRATE_SQL = """
+-- Миграция для существующих баз данных (v0.1.0 → v0.2.0)
+-- Добавляет колонку delivery_admin_id если её ещё нет
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_admin_id BIGINT;
+"""
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Скопируй SQL ниже и выполни в Supabase Dashboard:")
     print("https://app.supabase.com → твой проект → SQL Editor")
     print("=" * 60)
+    print("-- === НОВАЯ УСТАНОВКА (первый запуск) ===")
     print(CREATE_TABLES_SQL)
+    print()
+    print("-- === МИГРАЦИЯ (если БД уже была создана) ===")
+    print(MIGRATE_SQL)
     print("=" * 60)
     print("Готово! После выполнения SQL можно запускать бота.")
