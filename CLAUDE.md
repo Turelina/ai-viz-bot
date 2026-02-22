@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Telegram bot for accepting orders on AI-generated images. The client describes what they want and pays → the admin gets a Claude-generated prompt, manually generates the image in Midjourney/DALL-E/Imagen3, and delivers it.
+Telegram bot for accepting orders on AI-generated images. The client describes what they want and pays → Vision Agent automatically verifies the payment screenshot → if confirmed, bot generates a Claude prompt, admin manually creates the image in Midjourney/DALL-E/Imagen3, and delivers it.
 
-**Current version:** MVP 0.1.0 — manual payment confirmation and manual image generation.
+**Current version:** MVP 0.2.0 — automatic payment verification via Vision Agent, dynamic pricing by order type.
 
 ## Commands
 
@@ -16,15 +16,15 @@ pip install -r requirements.txt
 
 # Set up environment
 cp .env.example .env
-# Fill in 5 variables: SUPABASE_URL, SUPABASE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_IDS, ANTHROPIC_API_KEY
+# Fill in variables: SUPABASE_URL, SUPABASE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_IDS, ANTHROPIC_API_KEY
+# Payment details: PAYMENT_CARD, PAYMENT_RECIPIENT, PAYMENT_PHONE
+# Prices (optional): BASE_PRICE_IMAGE, PRICE_EXTERIOR, PRICE_INTERIOR
 
 # Create database tables (outputs SQL to paste into Supabase SQL Editor)
 python scripts/setup_database.py
 
 # Run the bot
 python main.py
-# or
-python scripts/run_bot.py
 
 # Docker
 docker build -t ai-viz-bot .
@@ -33,60 +33,81 @@ docker run --env-file .env ai-viz-bot
 
 ## Architecture
 
-### Current Implementation (MVP)
+### Current Implementation (MVP 0.2.0)
 
 All bot logic lives in one file: `src/integrations/telegram/bot.py`.
 
-**Client flow:** `/start` → description → style → payment screenshot → wait
+**Client flow:** `/start` → description → style → price shown → payment screenshot → Vision Agent verifies → auto-confirm or wait for admin
 
-**Admin flow:** receives notification with payment screenshot → clicks **Подтвердить** (confirm) → bot calls Claude to generate an image prompt → admin copies prompt into Midjourney/DALL-E → clicks **Доставить клиенту** → sends the generated image → client receives it
+**Admin flow (auto):** Vision Agent confirms automatically → admin immediately receives prompt with "📤 Доставить" button → sends image → client receives it
+
+**Admin flow (manual):** admin receives screenshot with Vision notes + ✅/❌ buttons → clicks Подтвердить → receives prompt → delivers image
 
 **Key components:**
 
 | File | Role |
 |------|------|
 | `main.py` | Entry point, starts polling |
-| `src/integrations/telegram/bot.py` | Entire bot: ConversationHandler for clients, InlineKeyboard callbacks for admin |
-| `src/core/database.py` | Lazy-initialized Supabase singleton (`db`). Currently only uses the `orders` table |
-| `config/settings.py` | Pydantic-settings, reads from `.env`. `TELEGRAM_ADMIN_IDS` is comma-separated |
-| `config/prompts.py` | System prompts for the planned multi-agent system (not yet wired up) |
-| `config/agents_config.yaml` | Agent configuration for the planned system (not yet wired up) |
+| `src/integrations/telegram/bot.py` | Entire bot logic (~550 lines) |
+| `src/core/database.py` | Lazy-initialized Supabase singleton (`db`). Uses `orders` and `messages` tables |
+| `config/settings.py` | Pydantic-settings, reads from `.env`. All payment details and prices here |
+| `config/prompts.py` | System prompts. `VISION_SYSTEM_PROMPT` is active; others are stubs for future agents |
+| `config/agents_config.yaml` | Agent configuration for the planned multi-agent system (not yet wired up) |
 | `scripts/setup_database.py` | Prints SQL to create tables — paste into Supabase SQL Editor |
 
-**In-memory state:** `pending_deliveries: dict[int, int]` maps `admin_id → order_id` while waiting for the admin to send the generated image. This is not persisted — restarts will lose delivery-in-progress state.
+**Claude is used in two places:**
+1. `_verify_payment()` — Vision Agent, analyzes payment screenshot (model: `claude-sonnet-4-5`)
+2. `_generate_prompt()` — converts client description into English image prompt (model: `claude-sonnet-4-5`)
 
-**Claude is used only in `_generate_prompt()`** (`bot.py:289`) to convert the client's description into an English image prompt for Midjourney/DALL-E. Model: `claude-sonnet-4-5`.
+**Dynamic pricing** via keyword matching in `_detect_price()`:
+- Exterior/facade/rendering keywords → `settings.price_exterior` (default 1500 ₽)
+- Interior/room keywords → `settings.price_interior` (default 1000 ₽)
+- Anything else → `settings.base_price_image` (default 500 ₽)
+
+**Vision Agent** — three confidence branches:
+- `confidence > 0.9` and `payment_confirmed = true` → auto-confirm, client gets instant notification
+- `0.7 ≤ confidence ≤ 0.9` (or Vision error) → manual admin review with Vision notes in caption
+- `confidence < 0.7` and `payment_confirmed = false` → ask client for clearer screenshot (order not created)
+
+**In-memory state:** `pending_deliveries: dict[int, int]` maps `admin_id → order_id`. Persisted in DB via `delivery_admin_id` column. Restored from DB on restart via `post_init()`.
 
 ### Planned Multi-Agent Architecture (not yet implemented)
 
-`config/agents_config.yaml` and `config/prompts.py` define a 6-agent pipeline that has not been built yet. The stubs in `src/core/agents/`, `src/core/orchestrator/`, `src/core/services/`, `src/integrations/llm/`, etc. are empty `__init__.py` files reserved for this future architecture:
+`config/agents_config.yaml` and `config/prompts.py` define a 6-agent pipeline. The stubs in `src/core/agents/`, `src/core/orchestrator/`, `src/core/services/`, `src/integrations/llm/`, etc. are empty `__init__.py` files reserved for future architecture:
 
-| Agent | Model | Role |
-|-------|-------|------|
-| Listener | claude-sonnet-4-5 | Classifies incoming messages |
-| Manager | claude-opus-4-6 | Communicates with clients, gathers requirements |
-| Vision | gemini-3-pro | Verifies payment screenshots automatically |
-| Engineer | claude-opus-4-6 | Generates detailed image prompts |
-| Generator | manual | Coordinates image generation (manual in MVP) |
-| Delivery | claude-sonnet-4-5 | Delivers results, collects feedback |
+| Agent | Model | Role | Status |
+|-------|-------|------|--------|
+| Listener | claude-sonnet-4-5 | Classifies incoming messages | Not implemented |
+| Manager | claude-opus-4-6 | Communicates with clients | Not implemented |
+| Vision | claude-sonnet-4-5 | Verifies payment screenshots | **Implemented** in `bot.py` |
+| Engineer | claude-opus-4-6 | Generates detailed image prompts | Not implemented (uses `_generate_prompt()`) |
+| Generator | manual | Coordinates image generation | Manual only |
+| Delivery | claude-sonnet-4-5 | Delivers results, collects feedback | Not implemented |
 
 ### Database
 
-**Current:** `src/core/database.py` uses only the `orders` table with columns: `id`, `user_id`, `username`, `description`, `status`, `prompt`, `created_at`.
+**Current:** two tables — `orders` and `messages`.
+
+`orders` columns: `id`, `user_id`, `username`, `description`, `status`, `prompt`, `delivery_admin_id`, `created_at`.
+
+`messages` columns: `id`, `order_id`, `role`, `content`, `created_at`.
 
 Order statuses: `awaiting_payment` → `prompt_ready` → `delivered` (or `cancelled`).
 
-**Planned:** `docs/database-schema.md` documents a full 7-table schema (`users`, `orders`, `messages`, `payments`, `generation_jobs`, `state_transitions`, `token_usage`) for the multi-agent system. This schema is not yet implemented.
+**Planned:** `docs/database-schema.md` documents a full 7-table schema for the multi-agent system. Not yet implemented.
 
 ## Configuration
 
 All settings go in `.env` (see `.env.example`). Key variables:
 
 - `TELEGRAM_ADMIN_IDS` — comma-separated Telegram user IDs with admin access
+- `PAYMENT_CARD` — card/bank details shown to client (e.g. `Сбербанк: 1234 5678 9012 3456`)
+- `PAYMENT_RECIPIENT` — full name of payment recipient (e.g. `Иванов Иван Иванович`)
+- `PAYMENT_PHONE` — recipient phone number for Vision verification (e.g. `+7 999 123 45 67`)
 - `BASE_PRICE_IMAGE` — base price in rubles (default 500)
-- `ENVIRONMENT` — `development` or `production`
-
-**Payment details** are hardcoded in `bot.py:66-67` — replace `Сбербанк: 1234 5678 9012 3456` and `Иванов И.И.` with real payment details before going live.
+- `PRICE_EXTERIOR` — price for exterior/facade/rendering orders (default 1500)
+- `PRICE_INTERIOR` — price for interior/room orders (default 1000)
+- `ENVIRONMENT` — `development` or `production` (currently unused in logic, reserved)
 
 ## Rules for Claude Code
 
@@ -111,8 +132,9 @@ These rules govern how Claude Code should behave when working in this repository
 ### Bot Architecture
 
 - **Do not break the `ConversationHandler` state machine.** It is the core of the client flow. Adding or removing states without tracing all transitions will cause silent failures.
-- **Remember: `pending_deliveries` is in-memory and not persisted.** Do not treat it as a reliable source of truth across restarts. If you add persistence, update this note.
+- **`pending_deliveries` is in-memory but also persisted in DB** via `delivery_admin_id` column. `post_init()` restores it on restart. Do not bypass the DB persistence.
 - **Do not add new Telegram handlers** without checking for conflicts with existing `ConversationHandler` states.
+- **Vision Agent is a safe fallback** — any exception in `_verify_payment()` sets `vision_result = None` and falls back to manual admin review. Never let Vision block order creation.
 
 ### Git & File Operations
 
@@ -134,9 +156,6 @@ These rules govern how Claude Code should behave when working in this repository
 
 > This section is updated as bugs are found and fixed. Each entry prevents the same mistake from being reintroduced.
 
-*(No entries yet — add here when a bug is found and fixed, with a short description of what went wrong and why.)*
-
-**Format for new entries:**
-```
-- [YYYY-MM-DD] **Short title**: What the bug was, what caused it, what the fix was.
-```
+- [2026-02-22] **Двойное уведомление клиента при авто-подтверждении**: `_process_payment_confirmed()` отправляла уведомление клиенту, и `get_payment()` тоже. Исправлено: уведомление клиента убрано из `_process_payment_confirmed()` — каждый вызывающий код делает это сам.
+- [2026-02-22] **Vision слишком строгий к форматированию телефона**: `+7-(911)-423-86-81` и `+7 911 423 86 81` — одинаковые номера. Исправлено в промпте: Vision явно инструктирован сравнивать только цифры.
+- [2026-02-22] **Vision не засчитывал сокращённое ФИО**: `Абрамов М.` при ожидаемом `Абрамов М.Е.` отклонялся. Исправлено: Vision засчитывает совпадение если фамилия совпала, инициалы необязательны полностью.

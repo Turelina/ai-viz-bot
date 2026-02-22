@@ -30,4 +30,4 @@ ENV ENVIRONMENT=production
 EXPOSE 8000
 
 # Команда запуска
-CMD ["python", "scripts/run_bot.py"]
+CMD ["python", "main.py"]

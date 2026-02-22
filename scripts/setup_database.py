@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS orders (
     user_id BIGINT NOT NULL,
     username TEXT,
     description TEXT,
-    status TEXT DEFAULT 'new',
+    status TEXT DEFAULT 'awaiting_payment',
     prompt TEXT,
     delivery_admin_id BIGINT,  -- какой админ сейчас доставляет (NULL = никто)
     created_at TIMESTAMPTZ DEFAULT NOW()
