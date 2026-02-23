@@ -41,70 +41,142 @@ def _get_anthropic_client() -> anthropic.AsyncAnthropic:
     return _anthropic_client
 
 # ─── Состояния диалога с клиентом ────────────────────────────────────────────
-DESCRIPTION, STYLE, PAYMENT = range(3)
+CHAT, PAYMENT = range(2)
 
 # ─── Отслеживаем какой заказ доставляем {admin_id: order_id} ─────────────────
 pending_deliveries: dict[int, int] = {}
 
-# ─── Ключевые слова для определения ценовой категории ────────────────────────
-_EXTERIOR_KEYWORDS = [
-    "фасад", "экстерьер", "рендеринг", "rendering", "exterior",
-    "здание", "дом", "архитектура", "строение", "постройка",
-    "фасадный", "наружный", "внешний вид",
-]
-_INTERIOR_KEYWORDS = [
-    "интерьер", "interior", "комната", "квартира", "помещение",
-    "гостиная", "спальня", "кухня", "офис", "студия", "зал",
-    "ванная", "коридор", "прихожая",
-]
 
-
-def _detect_price(description: str) -> int:
-    """Определяет цену заказа по ключевым словам в описании."""
-    desc_lower = description.lower()
-    if any(kw in desc_lower for kw in _EXTERIOR_KEYWORDS):
+def _price_from_category(category: str) -> int:
+    """Возвращает цену по категории из Manager-сигнала."""
+    if category == "exterior":
         return settings.price_exterior
-    if any(kw in desc_lower for kw in _INTERIOR_KEYWORDS):
+    if category == "interior":
         return settings.price_interior
     return settings.base_price_image
 
 
 # ─── Клиентский флоу ─────────────────────────────────────────────────────────
 
+async def _call_manager(history: list[dict]) -> str:
+    """Вызывает Manager Agent с историей диалога."""
+    client = _get_anthropic_client()
+    system_prompt = get_agent_prompt(
+        "manager",
+        base_price=settings.base_price_image,
+        price_exterior=settings.price_exterior,
+        price_interior=settings.price_interior,
+    )
+    response = await client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=500,
+        system=system_prompt,
+        messages=history,
+    )
+    return response.content[0].text
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    context.user_data["history"] = []
     await update.message.reply_text(
         "Привет! 👋 Я помогу вам заказать AI-изображение.\n\n"
-        "Напишите что хотите получить — как можно подробнее:"
+        "Расскажите, что хотите создать — уточним детали вместе."
     )
-    return DESCRIPTION
+    return CHAT
 
 
-async def get_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["description"] = update.message.text
-    await update.message.reply_text(
-        "Понял! Теперь уточните стиль.\n\n"
-        "Например: реализм, аниме, акварель, 3D, портрет, пейзаж, абстракция..."
-    )
-    return STYLE
+async def _handle_manager_response(
+    response_text: str,
+    history: list[dict],
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    """Обрабатывает ответ Manager Agent: JSON-сигнал → PAYMENT, текст → CHAT."""
+    try:
+        match = re.search(r'\{[\s\S]+\}', response_text)
+        if match:
+            data = json.loads(match.group(0))
+            if data.get("action") == "ready_for_payment":
+                category = data.get("price_category", "base")
+                description = data.get("description", "")
+                price = _price_from_category(category)
+                context.user_data["full_description"] = description
+                context.user_data["price"] = price
+                history.append({"role": "assistant", "content": response_text})
+                context.user_data["history"] = history
+                await update.message.reply_text(
+                    f"Отлично! Стоимость заказа: {price} ₽\n\n"
+                    f"Реквизиты для оплаты:\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{settings.payment_card}\n"
+                    f"Получатель: {settings.payment_recipient}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"После оплаты пришлите скриншот чека:"
+                )
+                return PAYMENT
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass  # Не JSON-сигнал — отправляем как обычный текст
+
+    history.append({"role": "assistant", "content": response_text})
+    context.user_data["history"] = history
+    await update.message.reply_text(response_text)
+    return CHAT
 
 
-async def get_style(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    description = context.user_data["description"]
-    style = update.message.text
-    context.user_data["full_description"] = f"{description}\nСтиль: {style}"
+async def manager_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Ведёт текстовый диалог с клиентом через Manager Agent."""
+    user_text = update.message.text
+    history = context.user_data.get("history", [])
+    history.append({"role": "user", "content": user_text})
 
-    price = _detect_price(context.user_data["full_description"])
-    context.user_data["price"] = price
-    await update.message.reply_text(
-        f"Стоимость: {price} ₽\n\n"
-        f"Реквизиты для оплаты:\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"{settings.payment_card}\n"
-        f"Получатель: {settings.payment_recipient}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"После оплаты пришлите скриншот чека:"
-    )
-    return PAYMENT
+    try:
+        response_text = await _call_manager(history)
+    except Exception as e:
+        logger.error(f"Manager Agent ошибка: {e}")
+        await update.message.reply_text("Произошла ошибка, попробуйте ещё раз.")
+        return CHAT
+
+    return await _handle_manager_response(response_text, history, update, context)
+
+
+async def manager_chat_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает фото-референс клиента в диалоге с Manager Agent."""
+    caption = update.message.caption or ""
+    history = context.user_data.get("history", [])
+
+    try:
+        tg_file = await context.bot.get_file(update.message.photo[-1].file_id)
+        photo_bytes = bytes(await tg_file.download_as_bytearray())
+        image_b64 = base64.standard_b64encode(photo_bytes).decode("utf-8")
+    except Exception as e:
+        logger.error(f"Ошибка скачивания фото-референса: {e}")
+        await update.message.reply_text("Не удалось загрузить фото, попробуйте ещё раз.")
+        return CHAT
+
+    # Сохраняем байты в памяти — загрузим в Storage после создания заказа (нужен order_id)
+    context.user_data.setdefault("reference_photo_bytes", []).append(photo_bytes)
+    logger.info(f"Фото-референс #{len(context.user_data['reference_photo_bytes'])} сохранён в памяти")
+
+    # Сообщение с изображением только для текущего вызова API
+    image_content: list = [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
+        {"type": "text", "text": caption if caption else "Вот фото референса."},
+    ]
+    call_history = history + [{"role": "user", "content": image_content}]
+
+    try:
+        response_text = await _call_manager(call_history)
+    except Exception as e:
+        logger.error(f"Manager Agent ошибка при обработке фото: {e}")
+        await update.message.reply_text("Произошла ошибка, попробуйте ещё раз.")
+        return CHAT
+
+    # В историю сохраняем текстовый placeholder, а не base64 — экономим токены
+    placeholder = f"[📎 Фото референса]{': ' + caption if caption else ''}"
+    history.append({"role": "user", "content": placeholder})
+
+    return await _handle_manager_response(response_text, history, update, context)
 
 
 async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -155,6 +227,24 @@ async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
             description=full_description,
         )
         db.save_message(order["id"], "user", full_description)
+        # Загружаем фото-референсы в Storage с именами {username}/{order_id}.jpg
+        ref_bytes_list = context.user_data.get("reference_photo_bytes", [])
+        ref_urls: list[str] = []
+        if ref_bytes_list:
+            safe_username = re.sub(r"[^\w.-]", "_", user.username or user.first_name or str(user.id))
+            for idx, ref_bytes in enumerate(ref_bytes_list, start=1):
+                try:
+                    url = db.upload_reference_photo(ref_bytes, safe_username, order["id"], index=idx)
+                    ref_urls.append(url)
+                    logger.info(f"Референс #{idx} загружен: {safe_username}/{order['id']}.jpg")
+                except Exception as ref_e:
+                    logger.error(f"Не удалось загрузить референс #{idx} заказа #{order['id']}: {ref_e}")
+            if ref_urls:
+                try:
+                    db.update_reference_photo(order["id"], ref_urls[0])
+                except Exception as ref_e:
+                    logger.error(f"Не удалось сохранить reference_photo_url заказа #{order['id']}: {ref_e}")
+        context.user_data["reference_photo_urls"] = ref_urls
     except Exception as e:
         logger.error(f"Ошибка создания заказа в БД: {e}")
         await update.message.reply_text(
@@ -229,6 +319,13 @@ async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         # Не превышаем 1024 символа
         if len(caption) + len(vision_block) <= 1024:
             caption += vision_block
+
+    # Добавляем ссылку на фото-референс (если клиент присылал)
+    ref_urls = context.user_data.get("reference_photo_urls", [])
+    if ref_urls:
+        ref_block = f"\n\n🖼 Референс: {ref_urls[0]}"
+        if len(caption) + len(ref_block) <= 1024:
+            caption += ref_block
 
     for admin_id in settings.admin_ids_list:
         try:
@@ -432,8 +529,8 @@ async def _verify_payment(
         payment_phone=payment_phone,
     )
     response = await client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=500,
+        model="claude-sonnet-4-6",
+        max_tokens=1500,
         system=system_prompt,
         messages=[{
             "role": "user",
@@ -448,9 +545,10 @@ async def _verify_payment(
     )
     text = response.content[0].text.strip()
     match = re.search(r'\{[\s\S]+\}', text)
-    if match:
-        text = match.group(0)
-    return json.loads(text)
+    if not match:
+        logger.warning(f"Vision Agent не вернул JSON. Ответ модели: {text[:300]!r}")
+        return None
+    return json.loads(match.group(0))
 
 
 # ─── Claude: генерация промпта ────────────────────────────────────────────────
@@ -458,23 +556,49 @@ async def _verify_payment(
 async def _generate_prompt(description: str) -> str:
     client = _get_anthropic_client()
     message = await client.messages.create(
-        model="claude-sonnet-4-5",
+        model="claude-sonnet-4-6",
         max_tokens=800,
         messages=[{
             "role": "user",
             "content": (
                 "You are an expert at writing prompts for Nano Banana Pro (Gemini 3 Pro Image by Google DeepMind).\n\n"
-                "Nano Banana Pro understands natural language — do NOT use keyword spam like '4K, masterpiece, trending on artstation'.\n"
-                "Use this structure: [Subject] + [Pose/Action] + [Setting] + [Style] + [Technical details]\n"
-                "Include: specific lighting (e.g. soft morning light, golden hour), camera details (85mm lens, f/2.8, shallow depth of field), "
-                "realistic textures and imperfections, composition details.\n"
-                "Write in flowing descriptive English, like a professional photography brief.\n\n"
+                "CORE RULES — follow strictly:\n"
+                "1. CHANGE only what the client explicitly requested (specific materials, colors, elements)\n"
+                "2. AUTO-IMPROVE the immediate plot/yard if it looks like a construction site (mud, debris, unfinished ground) — replace with neat lawn, path, or simple landscaping. Do this silently\n"
+                "3. Style is always photorealistic architectural visualization\n\n"
+                "Prompt structure: [Building description] + [Requested changes] + [Plot: neat if needed] + [Technical: photorealistic, architectural photography, 8K, soft natural light]\n\n"
+                "MANDATORY — always end the prompt with this exact sentence:\n"
+                "DO NOT change the sky, background, distant surroundings, neighboring buildings, or any element not mentioned in the request — these must remain identical to the reference photo.\n\n"
                 f"Client request: {description}\n\n"
                 "Output only the prompt, no explanations."
             ),
         }],
     )
     return message.content[0].text
+
+
+# ─── Очистка старых фото-референсов ──────────────────────────────────────────
+
+async def _cleanup_old_reference_photos(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляет фото-референсы из Supabase Storage старше 7 дней."""
+    try:
+        old_orders = db.get_orders_with_old_reference_photos(days=7)
+        if not old_orders:
+            return
+        for order in old_orders:
+            url = order.get("reference_photo_url", "") or ""
+            match = re.search(r'/reference-photos/([^?]+)', url)
+            if not match:
+                continue
+            filename = match.group(1)
+            try:
+                db.delete_reference_photo_from_storage(filename)
+                db.update_reference_photo(order["id"], None)
+                logger.info(f"Удалён референс заказа #{order['id']}: {filename}")
+            except Exception as e:
+                logger.error(f"Ошибка удаления референса #{order['id']}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка плановой очистки референсов: {e}")
 
 
 # ─── Инициализация при старте ─────────────────────────────────────────────────
@@ -495,6 +619,14 @@ async def post_init(application: Application) -> None:
             logger.info(f"Восстановлено {len(recovered)} доставок из БД: {recovered}")
     except Exception as e:
         logger.error(f"Не удалось восстановить состояние доставок: {e}", exc_info=True)
+
+    # Запускаем ежедневную очистку фото-референсов старше 7 дней
+    if application.job_queue:
+        application.job_queue.run_repeating(
+            _cleanup_old_reference_photos,
+            interval=86400,   # каждые 24 часа
+            first=60,         # первый запуск через 60 секунд после старта
+        )
 
 
 # ─── Обработчик необработанных ошибок ────────────────────────────────────────
@@ -522,8 +654,10 @@ def build_app() -> Application:
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_description)],
-            STYLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_style)],
+            CHAT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manager_chat),
+                MessageHandler(filters.PHOTO, manager_chat_photo),
+            ],
             PAYMENT: [
                 MessageHandler(filters.PHOTO, get_payment),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_payment),

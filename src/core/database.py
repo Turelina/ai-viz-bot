@@ -91,5 +91,46 @@ class Database:
         )
         return result.data or []
 
+    # ── Фото-референсы ────────────────────────────────────────────────────────
+
+    def upload_reference_photo(self, photo_bytes: bytes, username: str, order_id: int, index: int = 1) -> str:
+        """Загружает фото-референс в Supabase Storage.
+        Путь: {username}/{order_id}.jpg (или {order_id}_2.jpg для доп. фото).
+        Возвращает signed URL на 1 год."""
+        suffix = f"_{index}" if index > 1 else ""
+        filename = f"{username}/{order_id}{suffix}.jpg"
+        self.client.storage.from_("reference-photos").upload(
+            path=filename,
+            file=photo_bytes,
+            file_options={"content-type": "image/jpeg"},
+        )
+        result = self.client.storage.from_("reference-photos").create_signed_url(
+            filename, expires_in=31536000  # 1 год
+        )
+        return result["signedURL"]
+
+    def update_reference_photo(self, order_id: int, url: str | None) -> None:
+        """Сохраняет или сбрасывает URL фото-референса к заказу."""
+        self.client.table("orders").update(
+            {"reference_photo_url": url}
+        ).eq("id", order_id).execute()
+
+    def get_orders_with_old_reference_photos(self, days: int = 7) -> list[dict]:
+        """Возвращает заказы с референсом старше N дней."""
+        from datetime import datetime, timedelta
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        result = (
+            self.client.table("orders")
+            .select("id, reference_photo_url")
+            .not_.is_("reference_photo_url", "null")
+            .lt("created_at", cutoff)
+            .execute()
+        )
+        return result.data or []
+
+    def delete_reference_photo_from_storage(self, filename: str) -> None:
+        """Удаляет файл из Supabase Storage."""
+        self.client.storage.from_("reference-photos").remove([filename])
+
 
 db = Database()
