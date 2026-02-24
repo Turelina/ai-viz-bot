@@ -3,9 +3,10 @@ python-telegram-bot[job-queue]>=21.0,<22.0
 
 # AI
 anthropic>=0.30.0,<2.0.0
+google-genai>=1.0.0,<2.0.0
 
 # Database
-supabase==2.7.1
+supabase==2.15.0
 
 # Config
 pydantic-settings>=2.2.0,<3.0.0

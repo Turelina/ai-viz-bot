@@ -3,6 +3,8 @@
 """
 import asyncio
 import logging
+from dotenv import load_dotenv
+load_dotenv()
 from src.integrations.telegram.bot import build_app
 
 logging.basicConfig(

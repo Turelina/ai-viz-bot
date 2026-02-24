@@ -21,7 +21,7 @@ import re
 import anthropic
 from google import genai
 from google.genai import types as genai_types
-from config.prompts import get_agent_prompt
+from config.prompts import get_agent_prompt, LISTENER_SYSTEM_PROMPT
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
@@ -31,6 +31,7 @@ from telegram.ext import (
     ConversationHandler,
     filters,
     ContextTypes,
+    PicklePersistence,
 )
 from config.settings import settings
 from src.core.database import db
@@ -100,6 +101,58 @@ async def _call_manager(history: list[dict]) -> str:
         messages=history,
     )
     return response.content[0].text
+
+
+async def _call_listener(text: str) -> dict | None:
+    """Классифицирует входящее сообщение через Listener Agent (Haiku).
+    Возвращает dict с message_type и confidence или None при ошибке."""
+    client = _get_anthropic_client()
+    try:
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=3000,
+            temperature=0.3,
+            system=LISTENER_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": text}],
+        )
+        raw = response.content[0].text
+        match = re.search(r'\{[\s\S]+\}', raw)
+        if not match:
+            return None
+        return json.loads(match.group(0))
+    except Exception as e:
+        logger.error(f"Listener Agent ошибка: {e}")
+        return None
+
+
+def _listener_response(message_type: str) -> str:
+    """Возвращает ответ на сообщение по классификации Listener Agent."""
+    if message_type == "NEW_ORDER":
+        return (
+            "Чтобы оформить заказ, нажмите /start — "
+            "задам несколько вопросов и рассчитаю стоимость."
+        )
+    if message_type == "PAYMENT":
+        return (
+            "Оплата происходит в процессе оформления заказа. "
+            "Начните с /start."
+        )
+    if message_type == "QUESTION":
+        return (
+            "Мы делаем AI-визуализации недвижимости:\n\n"
+            f"• Экстерьер / фасад — от {settings.price_exterior} ₽\n"
+            f"• Интерьер / комната — от {settings.price_interior} ₽\n"
+            f"• Другие изображения — от {settings.base_price_image} ₽\n\n"
+            "Нажмите /start чтобы оформить заказ."
+        )
+    if message_type == "FEEDBACK":
+        return "Спасибо за обратную связь! Если хотите сделать заказ — /start."
+    if message_type == "CANCEL":
+        return "Активных заказов нет. Чтобы создать новый — /start."
+    return (
+        "Привет! Я бот для заказа AI-визуализаций. "
+        "Чтобы начать — нажмите /start."
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -573,8 +626,12 @@ async def _auto_deliver(query, context, order_id: int) -> None:
     file_id = pending_auto_images.pop(order_id, None)
     if not file_id:
         # После рестарта бота — fallback на ручной флоу
+        suffix = "\n\n⚠️ Изображение не найдено в памяти. Доставь вручную."
+        base = (query.message.caption or "")
+        if len(base) + len(suffix) > 1024:
+            base = base[:1024 - len(suffix)]
         await query.edit_message_caption(
-            (query.message.caption or "") + "\n\n⚠️ Изображение не найдено в памяти. Доставь вручную.",
+            base + suffix,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("📤 Доставить вручную", callback_data=f"deliver_{order_id}"),
             ]]),
@@ -687,16 +744,15 @@ async def _generate_prompt(description: str) -> str:
         messages=[{
             "role": "user",
             "content": (
-                "You are an expert at writing prompts for Nano Banana Pro (Gemini 3 Pro Image by Google DeepMind).\n\n"
-                "CORE RULES — follow strictly:\n"
-                "1. CHANGE only what the client explicitly requested (specific materials, colors, elements)\n"
-                "2. AUTO-IMPROVE the immediate plot/yard if it looks like a construction site (mud, debris, unfinished ground) — replace with neat lawn, path, or simple landscaping. Do this silently\n"
-                "3. Style is always photorealistic architectural visualization\n\n"
-                "Prompt structure: [Building description] + [Requested changes] + [Plot: neat if needed] + [Technical: photorealistic, architectural photography, 8K, soft natural light]\n\n"
-                "MANDATORY — always end the prompt with this exact sentence:\n"
-                "DO NOT change the sky, background, distant surroundings, neighboring buildings, or any element not mentioned in the request — these must remain identical to the reference photo.\n\n"
+                "You are an expert at writing short, focused prompts for Nano Banana Pro (Gemini 3 Pro Image by Google DeepMind).\n\n"
+                "RULES:\n"
+                "1. Write maximum 2-3 short sentences total\n"
+                "2. Describe ONLY what the client wants to change — materials, colors, specific elements\n"
+                "3. If the immediate yard/plot looks unfinished (mud, bare ground, construction debris) — add one short phrase with minimal neat landscaping that matches the building style (e.g. 'neat lawn and simple path'). Skip this if the surroundings already look finished\n"
+                "4. Do NOT describe sky, distant background, trees, lighting, or neighbors\n"
+                "5. End every prompt with: DO NOT change sky, background, distant surroundings, or any element not mentioned — keep identical to reference.\n\n"
                 f"Client request: {description}\n\n"
-                "Output only the prompt, no explanations."
+                "Output only the prompt, nothing else."
             ),
         }],
     )
@@ -727,6 +783,9 @@ async def _generate_image(prompt: str, reference_bytes: bytes | None = None) -> 
             contents=contents,
             config=genai_types.GenerateContentConfig(
                 response_modalities=["IMAGE"],
+                image_config=genai_types.ImageConfig(
+                    image_size="2K",
+                ),
             ),
         )
         for part in response.candidates[0].content.parts:
@@ -790,6 +849,21 @@ async def post_init(application: Application) -> None:
         )
 
 
+# ─── Listener Agent: сообщения вне активного диалога ─────────────────────────
+
+async def handle_unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отвечает на сообщения клиента вне ConversationHandler через Listener Agent."""
+    text = update.message.text or ""
+    result = await _call_listener(text)
+
+    if result and result.get("confidence", 0) >= 0.8:
+        msg_type = result.get("message_type", "OTHER")
+    else:
+        msg_type = "OTHER"
+
+    await update.message.reply_text(_listener_response(msg_type))
+
+
 # ─── Обработчик необработанных ошибок ────────────────────────────────────────
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -813,9 +887,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # ─── Сборка приложения ────────────────────────────────────────────────────────
 
 def build_app() -> Application:
+    persistence = PicklePersistence(filepath="bot_persistence.pkl")
     app = (
         Application.builder()
         .token(settings.telegram_bot_token)
+        .persistence(persistence)
         .connect_timeout(30)
         .read_timeout(60)
         .write_timeout(30)
@@ -827,6 +903,8 @@ def build_app() -> Application:
 
     # Диалог с клиентом
     conv = ConversationHandler(
+        name="main",
+        persistent=True,
         entry_points=[CommandHandler("start", start)],
         states={
             CHAT: [
@@ -855,6 +933,9 @@ def build_app() -> Application:
             handle_admin_photo,
         )
     )
+
+    # Listener Agent: catch-all для сообщений вне активного диалога
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unknown_message))
 
     app.add_error_handler(error_handler)
 

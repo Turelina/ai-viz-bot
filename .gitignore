@@ -79,3 +79,6 @@ dmypy.json
 temp/
 tmp/
 *.tmp
+
+# Bot persistence (contains user conversation state — not for version control)
+*.pkl

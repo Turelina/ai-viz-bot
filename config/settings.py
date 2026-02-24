@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = Field(..., description="Anthropic Claude API key")
 
+    # Google Gemini (NanaBananaPro) — опционально
+    gemini_api_key: str = Field(default="", description="Google Gemini API key для генерации изображений")
+    gemini_proxy: str = Field(default="", description="HTTP-прокси для Gemini API (если geo-blocked)")
+
     # Реквизиты оплаты
     payment_card: str = Field(default="Сбербанк: 1234 5678 9012 3456", description="Реквизиты карты для оплаты")
     payment_recipient: str = Field(default="Иванов И.И.", description="ФИО получателя платежа")

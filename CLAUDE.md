@@ -173,15 +173,19 @@ These rules govern how Claude Code should behave when working in this repository
 - [2026-02-24] **`BadRequest` глушился как сетевая ошибка**: в `error_handler` фильтр `isinstance(error, NetworkError)` в ptb v21 захватывал `BadRequest` (400), ошибки типа `Media_caption_too_long` тихо игнорировались вместо уведомления админа. Исправлено: фильтр сужен до `isinstance(error, TimedOut)` — только таймауты считаются транзиентными.
 - [2026-02-24] **`db.create_order()` не делал retry при SSL-ошибке Supabase**: singleton-клиент держал битое SSL-соединение и не пересоздавался — повторный вызов с тем же клиентом тоже падал. Исправлено: добавлен `db.reset()` + один retry с задержкой 1с в `get_payment()`.
 - [2026-02-24] **Дефолтный `write_timeout` Telegram = 5 сек**: при задержке Claude API 10–15 сек бот не успевал отправить ответ в Telegram → `TimedOut`. Исправлено: `connect_timeout=30`, `write_timeout=30`, `read_timeout=60`, `get_updates_connect_timeout=30`, `get_updates_read_timeout=30` в `build_app()`.
+- [2026-02-24] **`ConversationHandler` без `name`/`persistent=True` не сохранял состояние через PicklePersistence**: PTB не регистрировал ConversationHandler в persistence-слое — состояние CHAT/PAYMENT терялось при рестарте, Listener перехватывал сообщения вместо продолжения диалога. Исправлено: добавлены `name="main"` и `persistent=True` в ConversationHandler.
+- [2026-02-24] **Manager Agent отказывал клиентам с ArchiCAD/CAD-моделями**: модель не знала как обрабатывать запросы с упоминанием CAD и говорила «нужен специализированный 3D-софт» — потеря заказа. Исправлено: добавлено правило в MANAGER_SYSTEM_PROMPT: работаем с любым фото/скриншотом, просим прислать скриншот из программы.
+- [2026-02-24] **`_generate_prompt()` создавал многословные промпты (~300 слов)**: структура из 4 секций + AUTO-IMPROVE ландшафта давала мыльный AI-looking результат и пустой/размытый фон. Исправлено: инструкция переписана на max 2-3 предложения, описываем только запрошенные изменения, AUTO-IMPROVE — одна короткая фраза только если участок выглядит неготовым.
+- [2026-02-24] **`Media_caption_too_long` в `_auto_deliver()` fallback-ветке**: ветка «file_id не найден в памяти» (строка 629) вызывала `edit_message_caption` без усечения caption — повторный `BadRequest`. Исправлено: добавлена та же логика усечения что и в ветке успешной доставки.
 
 ## Session End Checklist
 
 > Когда пользователь говорит **"завершаем сессию"** (или "закрываем", "session end") — выполни все пункты по порядку.
 
-1. **Коммит** — проверь `git status`. Есть незакоммиченные изменения? Предложи коммит с осмысленным сообщением в формате `feat/fix/chore: описание`.
-2. **CHANGELOG.md** — добавь запись о сессии: что делали, что изменилось, дата. Формат: `## [YYYY-MM-DD HH:MM] Краткое описание`.
-3. **Known Issues** — были найдены или исправлены баги в этой сессии? Добавь записи в `### Known Issues & Past Mistakes` выше.
-4. **Roadmap** — завершён какой-то этап или появились новые задачи? Обнови `## Roadmap` ниже.
+1. **CHANGELOG.md** — добавь запись о сессии: что делали, что изменилось, дата. Формат: `## [YYYY-MM-DD HH:MM] Краткое описание`.
+2. **Known Issues** — были найдены или исправлены баги в этой сессии? Добавь записи в `### Known Issues & Past Mistakes` выше.
+3. **Roadmap** — завершён какой-то этап или появились новые задачи? Обнови `## Roadmap` ниже.
+4. **Коммит** — после обновления всех файлов: проверь `git status`, предложи один коммит со всем сразу в формате `feat/fix/chore: описание`.
 
 ## Roadmap — Следующие шаги
 
@@ -189,8 +193,8 @@ These rules govern how Claude Code should behave when working in this repository
 
 ### В работе / ближайшие
 
-- [ ] **Stage 5 — Listener Agent**: классификация входящих сообщений (модель: `claude-haiku-4-5`). Сейчас бот реагирует только на состояния ConversationHandler — нет обработки произвольных сообщений вне флоу.
-- [ ] **Stage 6 — Manager Agent**: заменить хардкодированные тексты диалога на `claude-opus-4-6`. `MANAGER_SYSTEM_PROMPT` уже написан в `config/prompts.py` — нужно подключить.
+- [x] **Stage 5 — Listener Agent**: ✅ Реализован. Классифицирует сообщения вне ConversationHandler через Haiku, отвечает статичными шаблонами по типу. PicklePersistence добавлен — состояние диалога переживает рестарты.
+- [ ] **Stage 6 — Manager Agent**: апгрейд модели с Haiku на Sonnet/Opus для диалога. `MANAGER_SYSTEM_PROMPT` уже написан в `config/prompts.py`. Текущая модель: `claude-haiku-4-5-20251001` в `_call_manager()`.
 
 ### Среднесрочные
 

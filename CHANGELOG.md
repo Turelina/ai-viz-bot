@@ -6,6 +6,24 @@
 
 ---
 
+## [2026-02-24 23:59] Stage 5 — Listener Agent, PicklePersistence, фикс промптов
+
+**Коммит:** `TBD`
+
+### Изменения
+- **Listener Agent** (`_call_listener`, `_listener_response`, `handle_unknown_message`): классифицирует сообщения вне ConversationHandler (NEW_ORDER / PAYMENT / QUESTION / FEEDBACK / CANCEL / OTHER) и даёт осмысленный ответ вместо тишины
+- **PicklePersistence**: состояние диалога CHAT/PAYMENT теперь переживает рестарты бота. Требует `name="main"` и `persistent=True` на ConversationHandler — добавлено
+- **MANAGER_SYSTEM_PROMPT**: добавлено правило «мы работаем с любым фото» — Manager больше не отказывает клиентам с ArchiCAD/CAD-моделями, а просит скриншот из программы
+- **`_generate_prompt()`**: инструкция переписана на краткие промпты (2-3 предложения). Убрана многословная структура, которая давала мыльный AI-looking результат. Остался минимальный AUTO-IMPROVE для неготового участка
+- **`_auto_deliver()` fallback**: пофиксили второй случай `Media_caption_too_long` — в ветке «файл не найден в памяти» не было усечения caption
+
+### Затронутые файлы
+- `src/integrations/telegram/bot.py` — Listener Agent, PicklePersistence, ConversationHandler, `_generate_prompt()`, `_auto_deliver()` fallback
+- `config/prompts.py` — MANAGER_SYSTEM_PROMPT (правило CAD/ArchiCAD)
+- `.gitignore` — добавлен `*.pkl`
+
+---
+
 ## [2026-02-24 20:24] fix: стабилизация сети — таймауты, retry БД, caption overflow
 
 **Коммит:** `80425eb`
