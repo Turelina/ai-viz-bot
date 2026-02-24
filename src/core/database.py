@@ -16,6 +16,10 @@ class Database:
             self._client = create_client(settings.supabase_url, settings.supabase_key)
         return self._client
 
+    def reset(self) -> None:
+        """Сбрасывает клиент — при следующем обращении будет пересоздан."""
+        self._client = None
+
     def create_order(self, user_id: int, username: str, description: str) -> dict:
         result = self.client.table("orders").insert({
             "user_id": user_id,
