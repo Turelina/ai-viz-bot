@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Telegram bot for accepting orders on AI-generated images. The client describes what they want and pays → Vision Agent automatically verifies the payment screenshot → if confirmed, bot generates a Claude prompt, admin manually creates the image in Midjourney/DALL-E/Imagen3, and delivers it.
+Telegram bot for accepting orders on AI-generated images. The client describes what they want and pays → Vision Agent automatically verifies the payment screenshot → if confirmed, Engineer Agent generates a detailed prompt → Gemini Imagen 3 Pro (Nano Banana Pro) auto-generates the image → admin delivers it to the client.
 
-**Current version:** MVP 0.2.0 — automatic payment verification via Vision Agent, dynamic pricing by order type.
+**Current version:** MVP 0.3.0 — multi-agent pipeline (Listener + Manager + Vision + Engineer), Gemini auto-generation, reference photo storage with cleanup.
 
 ## Commands
 
@@ -19,6 +19,7 @@ cp .env.example .env
 # Fill in variables: SUPABASE_URL, SUPABASE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_IDS, ANTHROPIC_API_KEY
 # Payment details: PAYMENT_CARD, PAYMENT_RECIPIENT, PAYMENT_PHONE
 # Prices (optional): BASE_PRICE_IMAGE, PRICE_EXTERIOR, PRICE_INTERIOR
+# Gemini (optional): GEMINI_API_KEY (if empty — auto-generation disabled), GEMINI_PROXY
 
 # Create database tables (outputs SQL to paste into Supabase SQL Editor)
 python scripts/setup_database.py
@@ -39,7 +40,7 @@ All bot logic lives in one file: `src/integrations/telegram/bot.py`.
 
 **Client flow:** `/start` → description → style → price shown → payment screenshot → Vision Agent verifies → auto-confirm or wait for admin
 
-**Admin flow (auto):** Vision Agent confirms automatically → admin immediately receives prompt with "📤 Доставить" button → sends image → client receives it
+**Admin flow (auto):** Vision Agent confirms → Engineer Agent generates prompt → Gemini auto-generates image → admin receives image with "✅ Доставить клиенту" button → one click → client receives it
 
 **Admin flow (manual):** admin receives screenshot with Vision notes + ✅/❌ buttons → clicks Подтвердить → receives prompt → delivers image
 
@@ -48,16 +49,21 @@ All bot logic lives in one file: `src/integrations/telegram/bot.py`.
 | File | Role |
 |------|------|
 | `main.py` | Entry point, starts polling |
-| `src/integrations/telegram/bot.py` | Entire bot logic (~550 lines) |
-| `src/core/database.py` | Lazy-initialized Supabase singleton (`db`). Uses `orders` and `messages` tables |
-| `config/settings.py` | Pydantic-settings, reads from `.env`. All payment details and prices here |
-| `config/prompts.py` | System prompts. `VISION_SYSTEM_PROMPT` is active; others are stubs for future agents |
-| `config/agents_config.yaml` | Agent configuration for the planned multi-agent system (not yet wired up) |
+| `src/integrations/telegram/bot.py` | Entire bot logic (~920 lines) |
+| `src/core/database.py` | Lazy-initialized Supabase singleton (`db`). Uses `orders` and `messages` tables. `reset()` for SSL recovery |
+| `config/settings.py` | Pydantic-settings, reads from `.env`. All payment details, prices, and API keys here |
+| `config/prompts.py` | System prompts. All 4 active agent prompts live here (Vision, Manager, Listener, Engineer) |
+| `config/agents_config.yaml` | Agent configuration reference (not wired up in code — used as documentation) |
 | `scripts/setup_database.py` | Prints SQL to create tables — paste into Supabase SQL Editor |
 
-**Claude is used in two places:**
-1. `_verify_payment()` — Vision Agent, analyzes payment screenshot (model: `claude-sonnet-4-5`)
-2. `_generate_prompt()` — converts client description into English image prompt (model: `claude-sonnet-4-5`)
+**Claude is used in four places:**
+1. `_call_listener()` — Listener Agent, classifies messages outside ConversationHandler (model: `claude-haiku-4-5-20251001`)
+2. `_call_manager()` — Manager Agent, multi-turn client dialogue, collects order requirements (model: `claude-sonnet-4-6`)
+3. `_verify_payment()` — Vision Agent, analyzes payment screenshot (model: `claude-sonnet-4-6`)
+4. `_call_engineer()` — Engineer Agent, generates detailed English prompt for Nano Banana Pro (model: `claude-sonnet-4-6`)
+
+**Gemini is used in one place:**
+- `_generate_image()` — Nano Banana Pro (Gemini Imagen 3 Pro, `gemini-3-pro-image-preview`). Auto-generates image from prompt + reference photo. Disabled if `GEMINI_API_KEY` is not set.
 
 **Dynamic pricing** via keyword matching in `_detect_price()`:
 - Exterior/facade/rendering keywords → `settings.price_exterior` (default 1500 ₽)
@@ -69,26 +75,33 @@ All bot logic lives in one file: `src/integrations/telegram/bot.py`.
 - `0.7 ≤ confidence ≤ 0.9` (or Vision error) → manual admin review with Vision notes in caption
 - `confidence < 0.7` and `payment_confirmed = false` → ask client for clearer screenshot (order not created)
 
-**In-memory state:** `pending_deliveries: dict[int, int]` maps `admin_id → order_id`. Persisted in DB via `delivery_admin_id` column. Restored from DB on restart via `post_init()`.
+**In-memory state:**
+- `pending_deliveries: dict[int, int]` — `admin_id → order_id`. Persisted in DB via `delivery_admin_id` column. Restored on restart via `post_init()`.
+- `pending_auto_images: dict[int, int]` — `order_id → file_id` of Gemini-generated image. Used for one-click delivery button "✅ Доставить клиенту". Not persisted (admin can always use "📤 Заменить вручную").
 
-### Planned Multi-Agent Architecture (not yet implemented)
+**Scheduled jobs** (started in `post_init()`):
+- `_cleanup_old_reference_photos()` — runs every 24h. Deletes reference photos > 7 days old from Supabase Storage to control costs.
 
-`config/agents_config.yaml` and `config/prompts.py` define a 6-agent pipeline. The stubs in `src/core/agents/`, `src/core/orchestrator/`, `src/core/services/`, `src/integrations/llm/`, etc. are empty `__init__.py` files reserved for future architecture:
+**ConversationHandler** is persistent via `PicklePersistence` (`bot_persistence.pkl`). `name="main"` and `persistent=True` required — state survives bot restarts.
+
+### Multi-Agent Architecture
+
+All agents live directly in `bot.py`. No separate orchestrator yet — `_process_payment_confirmed()` acts as the implicit pipeline coordinator.
 
 | Agent | Model | Role | Status |
 |-------|-------|------|--------|
-| Listener | claude-sonnet-4-5 | Classifies incoming messages | Not implemented |
-| Manager | claude-opus-4-6 | Communicates with clients | Not implemented |
-| Vision | claude-sonnet-4-5 | Verifies payment screenshots | **Implemented** in `bot.py` |
-| Engineer | claude-opus-4-6 | Generates detailed image prompts | Not implemented (uses `_generate_prompt()`) |
-| Generator | manual | Coordinates image generation | Manual only |
-| Delivery | claude-sonnet-4-5 | Delivers results, collects feedback | Not implemented |
+| Listener | `claude-haiku-4-5-20251001` | Classifies messages outside ConversationHandler | **Implemented** (`_call_listener()`) |
+| Manager | `claude-sonnet-4-6` | Multi-turn client dialogue, requirements gathering | **Implemented** (`_call_manager()`) |
+| Vision | `claude-sonnet-4-6` | Verifies payment screenshots | **Implemented** (`_verify_payment()`) |
+| Engineer | `claude-sonnet-4-6` | Generates detailed prompts for Nano Banana Pro | **Implemented** (`_call_engineer()`) |
+| Generator | Gemini Imagen 3 Pro | Auto-generates image from prompt + reference | **Implemented** (`_generate_image()`), manual fallback if no key |
+| Delivery | — | Delivers results, collects feedback | Not implemented (manual button flow) |
 
 ### Database
 
 **Current:** two tables — `orders` and `messages`.
 
-`orders` columns: `id`, `user_id`, `username`, `description`, `status`, `prompt`, `delivery_admin_id`, `created_at`.
+`orders` columns: `id`, `user_id`, `username`, `description`, `status`, `prompt`, `delivery_admin_id`, `reference_photo_url`, `created_at`.
 
 `messages` columns: `id`, `order_id`, `role`, `content`, `created_at`.
 
@@ -108,6 +121,9 @@ All settings go in `.env` (see `.env.example`). Key variables:
 - `PRICE_EXTERIOR` — price for exterior/facade/rendering orders (default 1500)
 - `PRICE_INTERIOR` — price for interior/room orders (default 1000)
 - `ENVIRONMENT` — `development` or `production` (currently unused in logic, reserved)
+- `GEMINI_API_KEY` — Google Gemini API key for Nano Banana Pro auto-generation (optional; if empty, auto-generation is disabled and admin generates manually)
+- `GEMINI_PROXY` — HTTP proxy URL for Gemini API if geo-blocked (e.g. `http://user:pass@host:port`)
+- `LOG_LEVEL` — logging level (default: `INFO`)
 
 ## Rules for Claude Code
 
@@ -135,6 +151,8 @@ These rules govern how Claude Code should behave when working in this repository
 - **`pending_deliveries` is in-memory but also persisted in DB** via `delivery_admin_id` column. `post_init()` restores it on restart. Do not bypass the DB persistence.
 - **Do not add new Telegram handlers** without checking for conflicts with existing `ConversationHandler` states.
 - **Vision Agent is a safe fallback** — any exception in `_verify_payment()` sets `vision_result = None` and falls back to manual admin review. Never let Vision block order creation.
+- **Engineer Agent wraps `_call_engineer()`** — if it fails, the exception bubbles up to `_process_payment_confirmed()`. Always keep error handling there. `_generate_prompt()` is left in the file as a fallback reference but is not called.
+- **PicklePersistence file is `bot_persistence.pkl`** — do not delete it in production; it holds active ConversationHandler states. ConversationHandler must keep `name="main"` and `persistent=True` or state is lost on restart.
 
 ### Git & File Operations
 
@@ -177,6 +195,9 @@ These rules govern how Claude Code should behave when working in this repository
 - [2026-02-24] **Manager Agent отказывал клиентам с ArchiCAD/CAD-моделями**: модель не знала как обрабатывать запросы с упоминанием CAD и говорила «нужен специализированный 3D-софт» — потеря заказа. Исправлено: добавлено правило в MANAGER_SYSTEM_PROMPT: работаем с любым фото/скриншотом, просим прислать скриншот из программы.
 - [2026-02-24] **`_generate_prompt()` создавал многословные промпты (~300 слов)**: структура из 4 секций + AUTO-IMPROVE ландшафта давала мыльный AI-looking результат и пустой/размытый фон. Исправлено: инструкция переписана на max 2-3 предложения, описываем только запрошенные изменения, AUTO-IMPROVE — одна короткая фраза только если участок выглядит неготовым.
 - [2026-02-24] **`Media_caption_too_long` в `_auto_deliver()` fallback-ветке**: ветка «file_id не найден в памяти» (строка 629) вызывала `edit_message_caption` без усечения caption — повторный `BadRequest`. Исправлено: добавлена та же логика усечения что и в ветке успешной доставки.
+- [2026-02-25] **`_process_payment_confirmed()` вызывал `_generate_prompt()` до загрузки ref_bytes**: Engineer не получал фото-референс, генерировал промпт вслепую только по тексту описания. Исправлено: порядок изменён — сначала грузится `ref_bytes` из Supabase, затем вызывается `_call_engineer(description, ref_bytes)`.
+- [2026-02-25] **Manager Agent работал на Haiku с `max_tokens=500`**: для сложных диалогов о деталях экстерьера (материалы, окружение, фон) Haiku не хватало контекста и токенов. Исправлено: апгрейд на `claude-sonnet-4-6`, `max_tokens=1024`, `temperature=0.7`.
+- [2026-02-25] **ENGINEER_SYSTEM_PROMPT использовал AI-buzzwords**: слова `photorealistic`, `8K`, `HDR`, `render` давали Gemini Imagen сигнал генерировать CGI-картинки вместо реалистичных фото. Исправлено: banned words list, заменено на `Amateur RAW photo, unedited real life photography`.
 
 ## Session End Checklist
 
@@ -194,12 +215,12 @@ These rules govern how Claude Code should behave when working in this repository
 ### В работе / ближайшие
 
 - [x] **Stage 5 — Listener Agent**: ✅ Реализован. Классифицирует сообщения вне ConversationHandler через Haiku, отвечает статичными шаблонами по типу. PicklePersistence добавлен — состояние диалога переживает рестарты.
-- [ ] **Stage 6 — Manager Agent**: апгрейд модели с Haiku на Sonnet/Opus для диалога. `MANAGER_SYSTEM_PROMPT` уже написан в `config/prompts.py`. Текущая модель: `claude-haiku-4-5-20251001` в `_call_manager()`.
+- [x] **Stage 6 — Manager Agent**: ✅ Реализован. Апгрейд с Haiku на `claude-sonnet-4-6`. Запрет markdown в ответах. Температура 0.7.
+- [x] **Stage 7 — Engineer Agent**: ✅ Реализован. `_call_engineer()` заменил `_generate_prompt()`. Принимает фото-референс, генерирует детальный промпт для Nano Banana Pro (`claude-sonnet-4-6`, `temperature=0.5`). `ENGINEER_SYSTEM_PROMPT` переписан под Gemini Imagen 3 Pro.
 
 ### Среднесрочные
 
-- [ ] **Stage 7 — Engineer Agent**: полноценная генерация промптов вместо `_generate_prompt()`. Модель: `claude-opus-4-6`. Результат — детальный промпт для Midjourney/DALL-E/Imagen3.
-- [ ] **Stage 8 — Delivery Agent**: автоматическая доставка изображения клиенту + сбор обратной связи (модель: `claude-sonnet-4-5`).
+- [ ] **Stage 8 — Delivery Agent**: автоматическая доставка изображения клиенту + сбор обратной связи (модель: `claude-sonnet-4-6`).
 
 ### Инфраструктура
 

@@ -6,9 +6,33 @@
 
 ---
 
+## [2026-02-25] Stage 6 — Engineer Agent, Manager upgrade, промпты экстерьера
+
+### Изменения
+
+**config/prompts.py**
+- **ENGINEER_SYSTEM_PROMPT** полностью переписан для экстерьеров: структура 3–5 предложений, список запрещённых AI-слов (render, 8K, photorealistic, CGI...), стиль «Amateur RAW photo, unedited real life photography», умные правила ландшафта (3 ветки), умное правило фона (реальное фото → protection line / CAD → описываем реалистичный фон), отдельная защита архитектурной геометрии, 4 примера промптов
+- **MANAGER_SYSTEM_PROMPT**: убран фиксированный вопрос о стиле → заменён условным правилом (спрашивать только если фото показывает пустую коробку/новостройку без материалов). Добавлен ШАГ 2.7 — вопрос об окружении и фоне (газон, кусты, небо, соседи) — только если клиент сам не упомянул. `description` в JSON-сигнале теперь включает окружение/фон
+
+**src/integrations/telegram/bot.py**
+- **Manager Agent** апгрейднут: `claude-haiku-4-5-20251001` → `claude-sonnet-4-6`, `max_tokens` 500→1024, добавлен `temperature=0.7`
+- **`/start` сообщение** переписано: список типов проектов, схема работы (3 шага), пример хорошего и плохого описания
+- **`_process_payment_confirmed()`** исправлен: теперь сначала загружается `ref_bytes` из Supabase, затем вызывается `_call_engineer(description, ref_bytes)` — Engineer видит фото при генерации промпта. Ранее вызывался устаревший `_generate_prompt()` без фото
+- **`_call_engineer()`** добавлен в bot.py как отдельная функция: передаёт description + reference bytes в ENGINEER_SYSTEM_PROMPT
+- **Caption при доставке** улучшен: теперь показывает краткое описание задачи клиента вместо стандартного «Ваш заказ готов»
+
+### Стратегическое решение
+MVP сфокусирован на **экстерьерах** (фасады, здания, ландшафт). Интерьеры, персонажи, фотошоп — отдельные этапы после стабилизации. Аудитория: архитекторы, проектировщики, риэлторы, частники.
+
+### Затронутые файлы
+- `config/prompts.py` — ENGINEER_SYSTEM_PROMPT, MANAGER_SYSTEM_PROMPT
+- `src/integrations/telegram/bot.py` — Manager model, start message, _call_engineer(), _process_payment_confirmed(), delivery caption
+
+---
+
 ## [2026-02-24 23:59] Stage 5 — Listener Agent, PicklePersistence, фикс промптов
 
-**Коммит:** `TBD`
+**Коммит:** `8b0c23a`
 
 ### Изменения
 - **Listener Agent** (`_call_listener`, `_listener_response`, `handle_unknown_message`): классифицирует сообщения вне ConversationHandler (NEW_ORDER / PAYMENT / QUESTION / FEEDBACK / CANCEL / OTHER) и даёт осмысленный ответ вместо тишины

@@ -95,8 +95,9 @@ async def _call_manager(history: list[dict]) -> str:
         price_interior=settings.price_interior,
     )
     response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=500,
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        temperature=0.7,
         system=system_prompt,
         messages=history,
     )
@@ -159,8 +160,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     context.user_data["history"] = []
     await update.message.reply_text(
-        "Привет! 👋 Я помогу вам заказать AI-изображение.\n\n"
-        "Расскажите, что хотите создать — уточним детали вместе."
+        "🏠 Добро пожаловать! Я помогу воплотить ваши идеи с помощью AI-визуализации.\n\n"
+        "Работаю с проектами:\n"
+        "• 🏢 Экстерьер и фасады\n"
+        "• 🛋️ Интерьер и помещения\n"
+        "• 🌿 Ландшафт и участки\n"
+        "• 🎨 Любые другие идеи\n\n"
+        "Как это работает:\n"
+        "1️⃣ Расскажите, что хотите изменить\n"
+        "2️⃣ Пришлите фото вашего объекта\n"
+        "3️⃣ Получите готовую AI-визуализацию\n\n"
+        "👇 Опишите вашу задачу. Чем точнее описание, тем круче результат!\n\n"
+        "✅ Идеально: Фасад сделать белой штукатуркой, крышу — тёмной мягкой черепицей. Вокруг дома добавить зелёный газон, кусты и солнечное небо.\n"
+        "❌ Плохо: Просто сделай реалистично."
     )
     return CHAT
 
@@ -473,10 +485,6 @@ async def _process_payment_confirmed(context, order_id: int, admin_ids: list[int
     """Генерирует промпт, пробует авто-генерацию и отправляет результат админам.
     Уведомление клиента — ответственность вызывателя."""
     order = db.get_order(order_id)
-    prompt = await _generate_prompt(order["description"])
-    db.update_prompt(order_id, prompt)
-    db.update_status(order_id, "prompt_ready")
-    db.save_message(order_id, "assistant", prompt)
 
     ref_bytes: bytes | None = None
     ref_url = order.get("reference_photo_url")
@@ -488,6 +496,11 @@ async def _process_payment_confirmed(context, order_id: int, admin_ids: list[int
                 ref_bytes = resp.content
         except Exception as ref_e:
             logger.warning(f"Не удалось скачать референс заказа #{order_id}: {ref_e}")
+
+    prompt = await _call_engineer(order["description"], ref_bytes)
+    db.update_prompt(order_id, prompt)
+    db.update_status(order_id, "prompt_ready")
+    db.save_message(order_id, "assistant", prompt)
 
     image_bytes = await _generate_image(prompt, reference_bytes=ref_bytes)
 
@@ -501,17 +514,26 @@ async def _process_payment_confirmed(context, order_id: int, admin_ids: list[int
             f"Промпт:\n{prompt[:950]}"
         )
         for admin_id in admin_ids:
-            try:
-                sent = await context.bot.send_photo(
-                    chat_id=admin_id,
-                    photo=io.BytesIO(image_bytes),
-                    caption=caption,
-                    reply_markup=keyboard,
-                )
-                if order_id not in pending_auto_images:
-                    pending_auto_images[order_id] = sent.photo[-1].file_id
-            except Exception as e:
-                logger.error(f"Не удалось отправить авто-изображение админу {admin_id}: {e}")
+            sent = None
+            for attempt in range(2):
+                try:
+                    sent = await context.bot.send_photo(
+                        chat_id=admin_id,
+                        photo=io.BytesIO(image_bytes),
+                        caption=caption,
+                        reply_markup=keyboard,
+                        write_timeout=120,
+                        read_timeout=120,
+                    )
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        logger.warning(f"Попытка 1 отправки авто-изображения админу {admin_id} не удалась ({e}), повтор...")
+                        await asyncio.sleep(3)
+                    else:
+                        logger.error(f"Не удалось отправить авто-изображение админу {admin_id}: {e}")
+            if sent and order_id not in pending_auto_images:
+                pending_auto_images[order_id] = sent.photo[-1].file_id
     else:
         # Fallback — прежний ручной флоу
         keyboard = InlineKeyboardMarkup([[
@@ -639,10 +661,18 @@ async def _auto_deliver(query, context, order_id: int) -> None:
         return
 
     try:
+        description_short = (order.get("description") or "")[:200]
+        if len(order.get("description") or "") > 200:
+            description_short += "…"
+        auto_delivery_caption = (
+            f"🎨 Готово! Ваша визуализация готова.\n\n"
+            f"✏️ Задача: {description_short}\n\n"
+            f"Хотите новый заказ? Жмите /start 🚀"
+        )
         await context.bot.send_photo(
             chat_id=order["user_id"],
             photo=file_id,
-            caption="🎉 Ваш заказ готов! Спасибо, что выбрали нас 😊",
+            caption=auto_delivery_caption,
         )
         db.update_status(order_id, "delivered")
         db.clear_delivery_admin(order_id)
@@ -680,10 +710,18 @@ async def handle_admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     photo_file_id = update.message.photo[-1].file_id
+    description_short = (order.get("description") or "")[:200]
+    if len(order.get("description") or "") > 200:
+        description_short += "…"
+    delivery_caption = (
+        f"🎨 Готово! Ваша визуализация готова.\n\n"
+        f"✏️ Задача: {description_short}\n\n"
+        f"Хотите новый заказ? Жмите /start 🚀"
+    )
     await context.bot.send_photo(
         chat_id=order["user_id"],
         photo=photo_file_id,
-        caption="🎉 Ваш заказ готов! Спасибо, что выбрали нас 😊",
+        caption=delivery_caption,
     )
     db.update_status(order_id, "delivered")
     db.clear_delivery_admin(order_id)
@@ -735,6 +773,30 @@ async def _verify_payment(
 
 
 # ─── Claude: генерация промпта ────────────────────────────────────────────────
+
+async def _call_engineer(description: str, reference_bytes: bytes | None = None) -> str:
+    """Engineer Agent: генерирует детальный промпт для Nano Banana Pro."""
+    client = _get_anthropic_client()
+    system_prompt = get_agent_prompt("engineer")
+
+    if reference_bytes:
+        image_b64 = base64.standard_b64encode(reference_bytes).decode("utf-8")
+        user_content: list | str = [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
+            {"type": "text", "text": f"Client request: {description}"},
+        ]
+    else:
+        user_content = f"Client request: {description}"
+
+    response = await client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        temperature=0.5,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_content}],
+    )
+    return response.content[0].text.strip()
+
 
 async def _generate_prompt(description: str) -> str:
     client = _get_anthropic_client()
