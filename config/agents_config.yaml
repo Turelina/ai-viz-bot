@@ -1,10 +1,10 @@
-# Конфигурация AI-агентов системы
+# AI agent configuration
 
 agents:
-  # 1. Агент-Слушатель
+  # 1. Listener Agent
   listener:
     name: "Listener Agent"
-    description: "Классифицирует входящие сообщения и направляет их"
+    description: "Classifies incoming messages and routes them"
     model: "claude-haiku-4-5-20251001"
     max_tokens: 3000
     temperature: 0.3
@@ -15,10 +15,10 @@ agents:
       - intent_detection
       - routing
 
-  # 2. Агент-Менеджер
+  # 2. Manager Agent
   manager:
     name: "Manager Agent"
-    description: "Общается с клиентами, собирает требования, управляет заказом"
+    description: "Communicates with clients, gathers requirements, and manages orders"
     model: "claude-sonnet-4-6"
     max_tokens: 15000
     temperature: 0.7
@@ -33,10 +33,10 @@ agents:
       max_messages: 10
       include_order_summary: true
 
-  # 3. Агент-Vision
+  # 3. Vision Agent
   vision:
     name: "Vision Agent"
-    description: "Анализирует скриншоты оплаты"
+    description: "Analyzes payment screenshots"
     model: "claude-sonnet-4-6"
     max_tokens: 8000
     temperature: 0.1
@@ -49,10 +49,10 @@ agents:
       - amount_extraction
       - date_extraction
 
-  # 4. Агент-Инженер
+  # 4. Engineer Agent
   engineer:
     name: "Engineer Agent"
-    description: "Создает технические промпты для генераторов изображений"
+    description: "Creates technical prompts for image generators"
     model: "claude-sonnet-4-6"
     max_tokens: 10000
     temperature: 0.5
@@ -67,11 +67,11 @@ agents:
       - dalle3
       - midjourney
 
-  # 5. Агент-Генератор
+  # 5. Generator Agent
   generator:
     name: "Generator Agent"
-    description: "Управляет процессом генерации изображений"
-    model: null  # Почти без AI в MVP
+    description: "Manages the image-generation process"
+    model: null  # Almost no AI in the MVP
     max_tokens: 1000
     temperature: 0.3
     timeout: 15
@@ -81,10 +81,10 @@ agents:
       - platform_selection
       - status_tracking
 
-  # 6. Агент-Доставщик
+  # 6. Delivery Agent
   delivery:
     name: "Delivery Agent"
-    description: "Доставляет результаты клиентам"
+    description: "Delivers results to clients"
     model: "claude-haiku-4-5-20251001"
     max_tokens: 3000
     temperature: 0.6
@@ -95,75 +95,75 @@ agents:
       - feedback_collection
       - completion_notification
 
-# Глобальные настройки для всех агентов
+# Global settings for all agents
 global_settings:
-  # Кеширование промптов
+  # Prompt caching
   enable_prompt_caching: true
   cache_ttl: 3600
 
-  # Логирование
+  # Logging
   log_all_interactions: true
   log_token_usage: true
 
-  # Обработка ошибок
+  # Error handling
   default_retry_attempts: 2
   default_timeout: 45
   exponential_backoff: true
 
-  # Контекст
+  # Context
   default_max_context_messages: 10
   compress_old_context: true
 
-  # Безопасность
+  # Security
   sanitize_inputs: true
   validate_outputs: true
 
-# Приоритеты моделей (fallback)
+# Model priorities (fallback)
 model_fallbacks:
   claude-sonnet-4-6:
     - claude-haiku-4-5-20251001
 
   claude-haiku-4-5-20251001: []
 
-# Лимиты использования
+# Usage limits
 usage_limits:
-  # Лимиты токенов
+  # Token limits
   max_tokens_per_message: 5000
   max_tokens_per_order: 50000
   max_tokens_per_day: 500000
 
-  # Лимиты запросов
+  # Request limits
   max_requests_per_minute: 30
   max_requests_per_hour: 500
 
-  # Лимиты затрат
+  # Cost limits
   max_cost_per_order_usd: 2.0
   max_cost_per_day_usd: 50.0
 
-# Мониторинг и метрики
+# Monitoring and metrics
 monitoring:
-  # Что отслеживать
+  # Values to track
   track_response_time: true
   track_token_usage: true
   track_success_rate: true
   track_errors: true
 
-  # Пороги для алертов
-  alert_on_slow_response: 60  # секунд
-  alert_on_high_token_usage: 40000  # на заказ
+  # Alert thresholds
+  alert_on_slow_response: 60  # Seconds
+  alert_on_high_token_usage: 40000  # Per order
   alert_on_error_rate: 0.1  # 10%
 
-# Оптимизация токенов
+# Token optimization
 token_optimization:
-  # Сжатие контекста
+  # Context compression
   compress_messages: true
   max_message_length: 2000
 
-  # Умное резюмирование
+  # Smart summarization
   summarize_old_context: true
   summary_threshold_messages: 20
 
-  # Кеширование
+  # Caching
   cache_system_prompts: true
   cache_user_preferences: true
   cache_pricing_tables: true

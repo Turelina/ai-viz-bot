@@ -1,11 +1,11 @@
-"""
-Скрипт инициализации базы данных Supabase
-Запусти: python scripts/setup_database.py
-Скопируй выведенный SQL в Supabase Dashboard → SQL Editor → Run
+"""Supabase database initialization script.
+
+Run: python scripts/setup_database.py
+Copy the printed SQL into Supabase Dashboard → SQL Editor → Run.
 """
 
 CREATE_TABLES_SQL = """
--- Таблица заказов
+-- Orders table
 CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -13,11 +13,11 @@ CREATE TABLE IF NOT EXISTS orders (
     description TEXT,
     status TEXT DEFAULT 'awaiting_payment',
     prompt TEXT,
-    delivery_admin_id BIGINT,  -- какой админ сейчас доставляет (NULL = никто)
+    delivery_admin_id BIGINT,  -- administrator currently delivering (NULL = none)
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Таблица сообщений (история переписки для контекста Claude)
+-- Messages table (conversation history for Claude context)
 CREATE TABLE IF NOT EXISTS messages (
     id BIGSERIAL PRIMARY KEY,
     order_id BIGINT REFERENCES orders(id) ON DELETE CASCADE,
@@ -32,20 +32,20 @@ CREATE INDEX IF NOT EXISTS idx_messages_order_id ON messages(order_id);
 """
 
 MIGRATE_SQL = """
--- Миграция для существующих баз данных (v0.1.0 → v0.2.0)
--- Добавляет колонку delivery_admin_id если её ещё нет
+-- Migration for existing databases (v0.1.0 → v0.2.0)
+-- Adds the delivery_admin_id column if it does not exist yet
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_admin_id BIGINT;
 """
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("Скопируй SQL ниже и выполни в Supabase Dashboard:")
-    print("https://app.supabase.com → твой проект → SQL Editor")
+    print("Copy the SQL below and execute it in Supabase Dashboard:")
+    print("https://app.supabase.com → your project → SQL Editor")
     print("=" * 60)
-    print("-- === НОВАЯ УСТАНОВКА (первый запуск) ===")
+    print("-- === NEW INSTALLATION (first run) ===")
     print(CREATE_TABLES_SQL)
     print()
-    print("-- === МИГРАЦИЯ (если БД уже была создана) ===")
+    print("-- === MIGRATION (if the database already exists) ===")
     print(MIGRATE_SQL)
     print("=" * 60)
-    print("Готово! После выполнения SQL можно запускать бота.")
+    print("Done! You can start the bot after executing the SQL.")

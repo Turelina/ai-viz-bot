@@ -9,7 +9,7 @@
 
   "error": {
     "type": "ErrorClassName",
-    "message": "Описание ошибки на русском",
+    "message": "Error description",
     "code": "ERR001",
     "details": {
       "key": "value"
@@ -19,22 +19,22 @@
   "context": {
     "state": "current_order_state",
     "previous_state": "previous_state",
-    "additional_info": "любая дополнительная информация"
+    "additional_info": "any additional information"
   },
 
-  "stack_trace": "Полный stack trace если есть",
+  "stack_trace": "Full stack trace when available",
 
   "attempted_solution": {
-    "action": "Что было попытано сделать",
+    "action": "What was attempted",
     "result": "success | failed | partial",
-    "reason": "Почему не сработало или сработало"
+    "reason": "Why it succeeded or failed"
   },
 
   "resolution": {
     "status": "resolved | unresolved | in_progress",
-    "assigned_to": "имя разработчика или null",
-    "notes": "Заметки о решении",
-    "solution": "Как было исправлено"
+    "assigned_to": "developer name or null",
+    "notes": "Resolution notes",
+    "solution": "How it was fixed"
   },
 
   "impact": {
@@ -47,9 +47,9 @@
   },
 
   "recommendations": [
-    "Рекомендация 1",
-    "Рекомендация 2",
-    "Рекомендация 3"
+    "Recommendation 1",
+    "Recommendation 2",
+    "Recommendation 3"
   ],
 
   "related_errors": [

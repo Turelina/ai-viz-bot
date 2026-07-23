@@ -1,6 +1,4 @@
-"""
-Точка входа. Запуск: python main.py
-"""
+"""Application entry point. Run with: python main.py."""
 import asyncio
 import logging
 from dotenv import load_dotenv
@@ -15,5 +13,5 @@ logging.basicConfig(
 if __name__ == "__main__":
     asyncio.set_event_loop(asyncio.new_event_loop())
     app = build_app()
-    print("Бот запущен. Нажми Ctrl+C для остановки.")
+    print("Bot started. Press Ctrl+C to stop.")
     app.run_polling()

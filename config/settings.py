@@ -1,7 +1,4 @@
-"""
-Конфигурация приложения.
-Читает переменные из .env файла.
-"""
+"""Application configuration loaded from the .env file."""
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
@@ -30,21 +27,21 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = Field(..., description="Anthropic Claude API key")
 
-    # Google Gemini (NanaBananaPro) — опционально
-    gemini_api_key: str = Field(default="", description="Google Gemini API key для генерации изображений")
-    gemini_proxy: str = Field(default="", description="HTTP-прокси для Gemini API (если geo-blocked)")
+    # Google Gemini (NanaBananaPro) — optional
+    gemini_api_key: str = Field(default="", description="Google Gemini API key for image generation")
+    gemini_proxy: str = Field(default="", description="HTTP proxy for the Gemini API when geo-blocked")
 
-    # Реквизиты оплаты
-    payment_card: str = Field(default="Сбербанк: 1234 5678 9012 3456", description="Реквизиты карты для оплаты")
-    payment_recipient: str = Field(default="Иванов И.И.", description="ФИО получателя платежа")
-    payment_phone: str = Field(default="", description="Номер телефона получателя (необязательно)")
+    # Payment details
+    payment_card: str = Field(default="Bank card: 1234 5678 9012 3456", description="Card details for payment")
+    payment_recipient: str = Field(default="Payment Recipient", description="Payment recipient full name")
+    payment_phone: str = Field(default="", description="Recipient phone number (optional)")
 
-    # Цены по категориям заказа
-    base_price_image: int = Field(default=500, description="Базовая цена (всё остальное), руб")
-    price_exterior: int = Field(default=1500, description="Цена за экстерьер/фасад/рендеринг, руб")
-    price_interior: int = Field(default=1000, description="Цена за интерьер/комнату, руб")
+    # Prices by order category
+    base_price_image: int = Field(default=500, description="Base price for all other requests, RUB")
+    price_exterior: int = Field(default=1500, description="Exterior, facade, or rendering price, RUB")
+    price_interior: int = Field(default=1000, description="Interior or room price, RUB")
 
-    # Окружение
+    # Environment
     environment: str = Field(default="development")
     log_level: str = Field(default="INFO")
 

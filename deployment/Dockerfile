@@ -1,33 +1,33 @@
-# Базовый образ Python
+# Base Python image
 FROM python:3.11-slim
 
-# Установка рабочей директории
+# Set working directory
 WORKDIR /app
 
-# Установка системных зависимостей
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Копирование файлов зависимостей
+# Copy dependency files
 COPY requirements.txt .
 
-# Установка Python зависимостей
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копирование кода приложения
+# Copy application code
 COPY . .
 
-# Создание папки для логов
+# Create the log directory
 RUN mkdir -p logs
 
-# Переменные окружения
+# Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV ENVIRONMENT=production
 
-# Открыть порт (если нужен FastAPI)
+# Expose a port if FastAPI is needed
 EXPOSE 8000
 
-# Команда запуска
+# Startup command
 CMD ["python", "main.py"]

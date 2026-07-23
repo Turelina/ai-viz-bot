@@ -1,13 +1,11 @@
-"""
-Telegram бот для приёма заказов на AI-изображения.
+"""Telegram bot for accepting AI image orders.
 
-Флоу клиента:
-  /start → описание → стиль → скрин оплаты → ожидание
+Client flow:
+  /start → description → style → payment screenshot → waiting
 
-Флоу админа (ты):
-  Получаешь уведомление с кнопками → подтверждаешь оплату →
-  получаешь промпт от Claude → генеришь картинку →
-  жмёшь "Доставить" → отправляешь фото → клиент получает результат
+Admin flow:
+  Receives a notification with buttons → confirms payment → receives a Claude
+  prompt → generates an image → selects Deliver → sends the image to the client.
 """
 
 import asyncio
@@ -38,7 +36,7 @@ from src.core.database import db
 
 logger = logging.getLogger(__name__)
 
-# ─── Claude клиент (синглтон) ─────────────────────────────────────────────────
+# ─── Claude client (singleton) ────────────────────────────────────────────────
 _anthropic_client: anthropic.AsyncAnthropic | None = None
 
 def _get_anthropic_client() -> anthropic.AsyncAnthropic:
@@ -50,11 +48,11 @@ def _get_anthropic_client() -> anthropic.AsyncAnthropic:
         )
     return _anthropic_client
 
-# ─── Gemini клиент (синглтон) ─────────────────────────────────────────────────
+# ─── Gemini client (singleton) ────────────────────────────────────────────────
 _gemini_client: genai.Client | None = None
 
 def _get_gemini_client() -> genai.Client | None:
-    """None если ключ не задан — авто-генерация отключена."""
+    """Return None when no API key is configured and auto-generation is disabled."""
     global _gemini_client
     if not settings.gemini_api_key:
         return None
@@ -67,25 +65,25 @@ def _get_gemini_client() -> genai.Client | None:
             os.environ.pop('HTTPS_PROXY', None)
     return _gemini_client
 
-# ─── Состояния диалога с клиентом ────────────────────────────────────────────
+# ─── Client conversation states ───────────────────────────────────────────────
 CHAT, PAYMENT = range(2)
 
-# ─── Отслеживаем какой заказ доставляем {admin_id: order_id} ─────────────────
+# ─── Track the order being delivered: {admin_id: order_id} ────────────────────
 pending_deliveries: dict[int, int] = {}
 
-# ─── file_id авто-сгенерированного фото {order_id: telegram_file_id} ─────────
+# ─── Auto-generated photo file_id: {order_id: telegram_file_id} ──────────────
 pending_auto_images: dict[int, str] = {}
 
-# ─── байты полного качества для кнопки "Скачать в 2K" {order_id: bytes} ──────
+# ─── Full-quality bytes for the "Download in 2K" button: {order_id: bytes} ───
 pending_full_quality: dict[int, bytes] = {}
 
-# ─── Счётчик клиентских попыток регенерации {order_id: count} ─────────────────
+# ─── Client regeneration attempt count: {order_id: count} ─────────────────────
 MAX_CLIENT_RETRIES = 3
 _pipeline_retry_counts: dict[int, int] = {}
 
 
 def _detect_image_media_type(image_bytes: bytes) -> str:
-    """Определяет MIME-тип изображения по сигнатуре первых байтов."""
+    """Determine an image MIME type from its leading-byte signature."""
     if image_bytes[:8] == b'\x89PNG\r\n\x1a\n':
         return "image/png"
     if image_bytes[:3] == b'\xff\xd8\xff':
@@ -98,7 +96,7 @@ def _detect_image_media_type(image_bytes: bytes) -> str:
 
 
 def _price_from_category(category: str) -> int:
-    """Возвращает цену по категории из Manager-сигнала."""
+    """Return the price for a category from the Manager signal."""
     if category == "exterior":
         return settings.price_exterior
     if category == "interior":
@@ -106,10 +104,10 @@ def _price_from_category(category: str) -> int:
     return settings.base_price_image
 
 
-# ─── Клиентский флоу ─────────────────────────────────────────────────────────
+# ─── Client flow ──────────────────────────────────────────────────────────────
 
 async def _call_manager(history: list[dict]) -> str:
-    """Вызывает Manager Agent с историей диалога."""
+    """Call the Manager Agent with the conversation history."""
     client = _get_anthropic_client()
     system_prompt = get_agent_prompt(
         "manager",
@@ -128,8 +126,10 @@ async def _call_manager(history: list[dict]) -> str:
 
 
 async def _call_listener(text: str) -> dict | None:
-    """Классифицирует входящее сообщение через Listener Agent (Haiku).
-    Возвращает dict с message_type и confidence или None при ошибке."""
+    """Classify an incoming message with the Listener Agent (Haiku).
+
+    Return a dictionary with message_type and confidence, or None on error.
+    """
     client = _get_anthropic_client()
     try:
         response = await client.messages.create(
@@ -145,37 +145,37 @@ async def _call_listener(text: str) -> dict | None:
             return None
         return json.loads(match.group(0))
     except Exception as e:
-        logger.error(f"Listener Agent ошибка: {e}")
+        logger.error(f"Listener Agent error: {e}")
         return None
 
 
 def _listener_response(message_type: str) -> str:
-    """Возвращает ответ на сообщение по классификации Listener Agent."""
+    """Return a response based on the Listener Agent classification."""
     if message_type == "NEW_ORDER":
         return (
-            "Чтобы оформить заказ, нажмите /start — "
-            "задам несколько вопросов и рассчитаю стоимость."
+            "To place an order, select /start — "
+            "I will ask a few questions and calculate the price."
         )
     if message_type == "PAYMENT":
         return (
-            "Оплата происходит в процессе оформления заказа. "
-            "Начните с /start."
+            "Payment is made while placing an order. "
+            "Start with /start."
         )
     if message_type == "QUESTION":
         return (
-            "Мы делаем AI-визуализации недвижимости:\n\n"
-            f"• Экстерьер / фасад — от {settings.price_exterior} ₽\n"
-            f"• Интерьер / комната — от {settings.price_interior} ₽\n"
-            f"• Другие изображения — от {settings.base_price_image} ₽\n\n"
-            "Нажмите /start чтобы оформить заказ."
+            "We create AI visualizations for properties:\n\n"
+            f"• Exterior / facade — from {settings.price_exterior} RUB\n"
+            f"• Interior / room — from {settings.price_interior} RUB\n"
+            f"• Other images — from {settings.base_price_image} RUB\n\n"
+            "Select /start to place an order."
         )
     if message_type == "FEEDBACK":
-        return "Спасибо за обратную связь! Если хотите сделать заказ — /start."
+        return "Thank you for the feedback! To place an order, select /start."
     if message_type == "CANCEL":
-        return "Активных заказов нет. Чтобы создать новый — /start."
+        return "There are no active orders. To create one, select /start."
     return (
-        "Привет! Я бот для заказа AI-визуализаций. "
-        "Чтобы начать — нажмите /start."
+        "Hello! I am a bot for ordering AI visualizations. "
+        "To begin, select /start."
     )
 
 
@@ -183,19 +183,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     context.user_data["history"] = []
     await update.message.reply_text(
-        "🏠 Добро пожаловать! Я помогу воплотить ваши идеи с помощью AI-визуализации.\n\n"
-        "Работаю с проектами:\n"
-        "• 🏢 Экстерьер и фасады\n"
-        "• 🛋️ Интерьер и помещения\n"
-        "• 🌿 Ландшафт и участки\n"
-        "• 🎨 Любые другие идеи\n\n"
-        "Как это работает:\n"
-        "1️⃣ Расскажите, что хотите изменить\n"
-        "2️⃣ Пришлите фото вашего объекта\n"
-        "3️⃣ Получите готовую AI-визуализацию\n\n"
-        "👇 Опишите вашу задачу. Чем точнее описание, тем круче результат!\n\n"
-        "✅ Идеально: Фасад сделать белой штукатуркой, крышу — тёмной мягкой черепицей. Вокруг дома добавить зелёный газон, кусты и солнечное небо.\n"
-        "❌ Плохо: Просто сделай реалистично."
+        "🏠 Welcome! I will help bring your ideas to life with AI visualization.\n\n"
+        "I work with:\n"
+        "• 🏢 Exteriors and facades\n"
+        "• 🛋️ Interiors and rooms\n"
+        "• 🌿 Landscapes and plots\n"
+        "• 🎨 Any other ideas\n\n"
+        "How it works:\n"
+        "1️⃣ Tell me what you want to change\n"
+        "2️⃣ Send a photo of your property\n"
+        "3️⃣ Receive the finished AI visualization\n\n"
+        "👇 Describe your request. The more precise the description, the better the result!\n\n"
+        "✅ Great: Make the facade white plaster and the roof dark asphalt shingles. Add a green lawn, shrubs, and a sunny sky around the house.\n"
+        "❌ Not enough: Just make it realistic."
     )
     return CHAT
 
@@ -206,7 +206,7 @@ async def _handle_manager_response(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
-    """Обрабатывает ответ Manager Agent: JSON-сигнал → PAYMENT, текст → CHAT."""
+    """Handle a Manager response: JSON signal → PAYMENT; text → CHAT."""
     try:
         match = re.search(r'\{[\s\S]+\}', response_text)
         if match:
@@ -220,17 +220,17 @@ async def _handle_manager_response(
                 history.append({"role": "assistant", "content": response_text})
                 context.user_data["history"] = history
                 await update.message.reply_text(
-                    f"Отлично! Стоимость заказа: {price} ₽\n\n"
-                    f"Реквизиты для оплаты:\n"
+                    f"Great! Order price: {price} RUB\n\n"
+                    f"Payment details:\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"{settings.payment_card}\n"
-                    f"Получатель: {settings.payment_recipient}\n"
+                    f"Recipient: {settings.payment_recipient}\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"После оплаты пришлите скриншот чека:"
+                    f"After payment, send a screenshot of the receipt:"
                 )
                 return PAYMENT
     except (json.JSONDecodeError, KeyError, TypeError):
-        pass  # Не JSON-сигнал — отправляем как обычный текст
+        pass  # Not a JSON signal: send it as regular text.
 
     history.append({"role": "assistant", "content": response_text})
     context.user_data["history"] = history
@@ -239,7 +239,7 @@ async def _handle_manager_response(
 
 
 async def manager_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Ведёт текстовый диалог с клиентом через Manager Agent."""
+    """Run a text conversation with the client through the Manager Agent."""
     user_text = update.message.text
     history = context.user_data.get("history", [])
     history.append({"role": "user", "content": user_text})
@@ -250,19 +250,19 @@ async def manager_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
         except asyncio.TimeoutError:
             await update.message.reply_text(
-                "⏳ Бот сейчас загружен — ответ готовится, подождите немного."
+                "⏳ The bot is currently busy. Your response is being prepared; please wait a moment."
             )
         response_text = await task
     except Exception as e:
-        logger.error(f"Manager Agent ошибка: {e}")
-        await update.message.reply_text("Произошла ошибка, попробуйте ещё раз.")
+        logger.error(f"Manager Agent error: {e}")
+        await update.message.reply_text("An error occurred. Please try again.")
         return CHAT
 
     return await _handle_manager_response(response_text, history, update, context)
 
 
 async def manager_chat_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает фото-референс клиента в диалоге с Manager Agent."""
+    """Handle a client's reference photo in the Manager Agent conversation."""
     caption = update.message.caption or ""
     history = context.user_data.get("history", [])
 
@@ -275,18 +275,18 @@ async def manager_chat_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         photo_bytes = bytes(await tg_file.download_as_bytearray())
         image_b64 = base64.standard_b64encode(photo_bytes).decode("utf-8")
     except Exception as e:
-        logger.error(f"Ошибка скачивания фото-референса: {e}")
-        await update.message.reply_text("Не удалось загрузить фото, попробуйте ещё раз.")
+        logger.error(f"Failed to download reference photo: {e}")
+        await update.message.reply_text("Unable to upload the photo. Please try again.")
         return CHAT
 
-    # Сохраняем байты в памяти — загрузим в Storage после создания заказа (нужен order_id)
+    # Keep bytes in memory; upload to Storage after creating the order (requires order_id).
     context.user_data.setdefault("reference_photo_bytes", []).append(photo_bytes)
-    logger.info(f"Фото-референс #{len(context.user_data['reference_photo_bytes'])} сохранён в памяти")
+    logger.info(f"Reference photo #{len(context.user_data['reference_photo_bytes'])} stored in memory")
 
-    # Сообщение с изображением только для текущего вызова API
+    # Use the image message only for the current API call.
     image_content: list = [
         {"type": "image", "source": {"type": "base64", "media_type": _detect_image_media_type(photo_bytes), "data": image_b64}},
-        {"type": "text", "text": caption if caption else "Вот фото референса."},
+        {"type": "text", "text": caption if caption else "Here is the reference photo."},
     ]
     call_history = history + [{"role": "user", "content": image_content}]
 
@@ -296,16 +296,16 @@ async def manager_chat_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
         except asyncio.TimeoutError:
             await update.message.reply_text(
-                "⏳ Бот сейчас загружен — ответ готовится, подождите немного."
+                "⏳ The bot is currently busy. Your response is being prepared; please wait a moment."
             )
         response_text = await task
     except Exception as e:
-        logger.error(f"Manager Agent ошибка при обработке фото: {e}")
-        await update.message.reply_text("Произошла ошибка, попробуйте ещё раз.")
+        logger.error(f"Manager Agent photo-processing error: {e}")
+        await update.message.reply_text("An error occurred. Please try again.")
         return CHAT
 
-    # В историю сохраняем текстовый placeholder, а не base64 — экономим токены
-    placeholder = f"[📎 Фото референса]{': ' + caption if caption else ''}"
+    # Store a text placeholder rather than base64 in history to save tokens.
+    placeholder = f"[📎 Reference photo]{': ' + caption if caption else ''}"
     history.append({"role": "user", "content": placeholder})
 
     return await _handle_manager_response(response_text, history, update, context)
@@ -314,7 +314,7 @@ async def manager_chat_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message.photo and not update.message.document:
         await update.message.reply_text(
-            "Пожалуйста, пришлите скриншот оплаты как фото."
+            "Please send the payment screenshot as a photo."
         )
         return PAYMENT
 
@@ -323,7 +323,7 @@ async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     price = context.user_data.get("price", settings.base_price_image)
     photo_file_id = update.message.photo[-1].file_id if update.message.photo else update.message.document.file_id
 
-    # ── Vision Agent: проверяем скриншот перед созданием заказа ──────────────
+    # ── Vision Agent: verify the screenshot before creating an order ──────────
     vision_result: dict | None = None
     try:
         tg_file = await context.bot.get_file(photo_file_id)
@@ -335,23 +335,23 @@ async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
             settings.payment_card,
             settings.payment_phone,
         )
-        logger.info(f"Vision Agent результат: {vision_result}")
+        logger.info(f"Vision Agent result: {vision_result}")
     except Exception as e:
-        logger.error(f"Vision Agent ошибка (fallback на ручную проверку): {e}")
+        logger.error(f"Vision Agent error (falling back to manual review): {e}")
 
-    # Если Vision уверен, что это не чек — просим прислать чёткий скриншот
+    # If Vision is confident this is not a receipt, ask for a clearer screenshot.
     if (
         vision_result is not None
         and not vision_result.get("payment_confirmed", True)
         and vision_result.get("confidence", 1.0) < 0.7
     ):
         await update.message.reply_text(
-            "⚠️ Не удалось распознать чек оплаты на этом изображении.\n"
-            "Пожалуйста, пришлите более чёткий скриншот с суммой и статусом платежа."
+            "⚠️ Unable to recognize a payment receipt in this image.\n"
+            "Please send a clearer screenshot showing the amount and payment status."
         )
         return PAYMENT
 
-    # ── Создаём заказ в БД (retry при SSL-ошибке) ────────────────────────────
+    # ── Create the database order (retry after an SSL error) ──────────────────
     order = None
     ref_urls: list[str] = []
     for attempt in range(2):
@@ -362,7 +362,7 @@ async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
                 description=full_description,
             )
             db.save_message(order["id"], "user", full_description)
-            # Загружаем фото-референсы в Storage с именами {username}/{order_id}.jpg
+            # Upload reference photos to Storage as {username}/{order_id}.jpg.
             ref_bytes_list = context.user_data.get("reference_photo_bytes", [])
             if ref_bytes_list:
                 safe_username = re.sub(r"[^\w.-]", "_", user.username or user.first_name or str(user.id))
@@ -370,69 +370,69 @@ async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
                     try:
                         url = db.upload_reference_photo(ref_bytes, safe_username, order["id"], index=idx)
                         ref_urls.append(url)
-                        logger.info(f"Референс #{idx} загружен: {safe_username}/{order['id']}.jpg")
+                        logger.info(f"Reference #{idx} uploaded: {safe_username}/{order['id']}.jpg")
                     except Exception as ref_e:
-                        logger.error(f"Не удалось загрузить референс #{idx} заказа #{order['id']}: {ref_e}")
+                        logger.error(f"Failed to upload reference #{idx} for order #{order['id']}: {ref_e}")
                 if ref_urls:
                     try:
                         db.update_reference_photo(order["id"], ref_urls[0])
                     except Exception as ref_e:
-                        logger.error(f"Не удалось сохранить reference_photo_url заказа #{order['id']}: {ref_e}")
-            break  # успех
+                        logger.error(f"Failed to save reference_photo_url for order #{order['id']}: {ref_e}")
+            break  # Success.
         except Exception as e:
             if attempt == 0:
-                logger.warning(f"db.create_order попытка 1 не удалась: {e} — пересоздаём клиент")
+                logger.warning(f"db.create_order attempt 1 failed: {e}; recreating client")
                 db.reset()
                 await asyncio.sleep(1)
             else:
-                logger.error(f"Ошибка создания заказа в БД: {e}")
+                logger.error(f"Database order-creation error: {e}")
                 await update.message.reply_text(
-                    "⚠️ Технический сбой — попробуйте отправить скриншот ещё раз.\n"
-                    "Если проблема повторяется, напишите нам напрямую."
+                    "⚠️ A technical problem occurred. Please send the screenshot again.\n"
+                    "If the issue persists, contact us directly."
                 )
                 return PAYMENT
     context.user_data["reference_photo_urls"] = ref_urls
 
-    # ── Авто-подтверждение при высокой уверенности Vision ────────────────────
+    # ── Automatically confirm payment when Vision has high confidence ─────────
     if (
         vision_result is not None
         and vision_result.get("payment_confirmed", False)
         and vision_result.get("confidence", 0) > 0.9
     ):
         await update.message.reply_text(
-            "✅ Оплата подтверждена автоматически!\n"
-            "Готовим ваш заказ — скоро пришлём результат."
+            "✅ Payment was confirmed automatically!\n"
+            "We are preparing your order and will send the result shortly."
         )
         try:
             await _process_payment_confirmed(context, order["id"], settings.admin_ids_list)
         except Exception as e:
-            logger.error(f"Ошибка авто-подтверждения заказа #{order['id']}: {e}")
+            logger.error(f"Auto-confirmation error for order #{order['id']}: {e}")
             await _notify_pipeline_failure(context, order["id"])
         return ConversationHandler.END
 
-    # ── Стандартный флоу: уведомляем админов вручную ─────────────────────────
+    # ── Standard flow: notify administrators for manual review ────────────────
     await update.message.reply_text(
-        "✅ Скриншот получен!\n"
-        "Проверяем оплату — обычно занимает до 30 минут.\n"
-        "Как подтвердим, сразу напишем."
+        "✅ Screenshot received!\n"
+        "We are checking the payment; this usually takes up to 30 minutes.\n"
+        "We will message you as soon as it is confirmed."
     )
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm_{order['id']}"),
-        InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{order['id']}"),
+        InlineKeyboardButton("✅ Confirm", callback_data=f"confirm_{order['id']}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{order['id']}"),
     ]])
 
-    # Telegram ограничение: caption не более 1024 символов
+    # Telegram limit: captions must not exceed 1,024 characters.
     short_desc = (full_description[:300] + "...") if len(full_description) > 300 else full_description
     caption = (
-        f"💰 Новая оплата!\n\n"
-        f"Заказ #{order['id']}\n"
-        f"Клиент: @{user.username or user.first_name} (ID: {user.id})\n\n"
-        f"Описание:\n{short_desc}\n\n"
-        f"Сумма: {price} ₽"
+        f"💰 New payment!\n\n"
+        f"Order #{order['id']}\n"
+        f"Client: @{user.username or user.first_name} (ID: {user.id})\n\n"
+        f"Description:\n{short_desc}\n\n"
+        f"Amount: {price} RUB"
     )
 
-    # Добавляем заметки Vision Agent (если есть результат)
+    # Add Vision Agent notes when a result is available.
     if vision_result is not None:
         confidence = vision_result.get("confidence", 0)
         amount = vision_result.get("amount")
@@ -441,19 +441,19 @@ async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         confidence_emoji = "🟡" if confidence < 0.9 else "🟢"
         vision_block = f"\n\n🤖 Vision Agent: {confidence_emoji} {int(confidence * 100)}%"
         if amount:
-            vision_block += f" | {amount} ₽"
+            vision_block += f" | {amount} RUB"
         if status:
             vision_block += f" | {status}"
         if notes:
             vision_block += f"\n📝 {notes}"
-        # Не превышаем 1024 символа
+        # Keep within the 1,024-character limit.
         if len(caption) + len(vision_block) <= 1024:
             caption += vision_block
 
-    # Добавляем ссылку на фото-референс (если клиент присылал)
+    # Add a reference-photo link when the client supplied one.
     ref_urls = context.user_data.get("reference_photo_urls", [])
     if ref_urls:
-        ref_block = f"\n\n🖼 Референс: {ref_urls[0]}"
+        ref_block = f"\n\n🖼 Reference: {ref_urls[0]}"
         if len(caption) + len(ref_block) <= 1024:
             caption += ref_block
 
@@ -466,38 +466,38 @@ async def get_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
                 reply_markup=keyboard,
             )
         except Exception as e:
-            logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+            logger.error(f"Failed to notify administrator {admin_id}: {e}")
 
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "Заказ отменён. Напишите /start чтобы начать снова."
+        "Order cancelled. Select /start to begin again."
     )
     return ConversationHandler.END
 
 
-# ─── Команды для админа ──────────────────────────────────────────────────────
+# ─── Administrator commands ──────────────────────────────────────────────────
 
 async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает последние 10 заказов. Только для админа."""
+    """Show the latest 10 orders. Administrators only."""
     if update.effective_user.id not in settings.admin_ids_list:
         return
 
     orders = db.get_recent_orders(limit=10)
     if not orders:
-        await update.message.reply_text("Заказов пока нет.")
+        await update.message.reply_text("There are no orders yet.")
         return
 
     STATUS_LABELS = {
-        "awaiting_payment": "⏳ ждёт оплаты",
-        "prompt_ready":     "🎨 промпт готов",
-        "delivered":        "✅ доставлен",
-        "cancelled":        "❌ отменён",
+        "awaiting_payment": "⏳ awaiting payment",
+        "prompt_ready":     "🎨 prompt ready",
+        "delivered":        "✅ delivered",
+        "cancelled":        "❌ cancelled",
     }
 
-    lines = ["Последние заказы:\n"]
+    lines = ["Latest orders:\n"]
     for o in orders:
         status = STATUS_LABELS.get(o["status"], o["status"])
         desc = o["description"] or ""
@@ -510,7 +510,7 @@ async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text("\n".join(lines))
 
 
-# ─── Общая логика подтверждения оплаты (ручное и авто) ───────────────────────
+# ─── Shared payment-confirmation logic (manual and automatic) ────────────────
 
 async def _send_batch_to_admin(
     context,
@@ -519,35 +519,35 @@ async def _send_batch_to_admin(
     prompt: str,
     order_id: int,
 ) -> None:
-    """Отправляет батч сгенерированных изображений и кнопки управления одному админу."""
+    """Send generated images and control buttons to one administrator."""
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Доставить клиенту", callback_data=f"deliver_{order_id}")],
-        [InlineKeyboardButton("🔄 Сгенерировать заново", callback_data=f"regen_{order_id}")],
-        [InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_order_{order_id}")],
+        [InlineKeyboardButton("✅ Deliver to client", callback_data=f"deliver_{order_id}")],
+        [InlineKeyboardButton("🔄 Generate again", callback_data=f"regen_{order_id}")],
+        [InlineKeyboardButton("❌ Cancel order", callback_data=f"cancel_order_{order_id}")],
     ])
 
     if not images:
-        # Фолбэк — изображений нет, только промпт
+        # Fallback: no images, only the prompt.
         fallback_keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📤 Доставить клиенту", callback_data=f"deliver_{order_id}"),
+            InlineKeyboardButton("📤 Deliver to client", callback_data=f"deliver_{order_id}"),
         ]])
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
                 text=(
-                    f"🎨 Промпт для заказа #{order_id}:\n\n"
+                    f"🎨 Prompt for order #{order_id}:\n\n"
                     f"{prompt}\n\n"
-                    f"Сгенерируй изображение и нажми кнопку ниже."
+                    f"Generate the image and select the button below."
                 ),
                 reply_markup=fallback_keyboard,
             )
         except Exception as e:
-            logger.error(f"Не удалось отправить промпт админу {admin_id}: {e}")
+            logger.error(f"Failed to send prompt to administrator {admin_id}: {e}")
         return
 
     if len(images) == 1:
-        # Одна картинка — send_photo с кнопками прямо под ней
-        caption = f"🤖 NanaBananaPro — заказ #{order_id}.\n\nПромпт:\n{prompt[:900]}"
+        # One image: send_photo with buttons directly below it.
+        caption = f"🤖 NanaBananaPro — order #{order_id}.\n\nPrompt:\n{prompt[:900]}"
         try:
             await context.bot.send_photo(
                 chat_id=admin_id,
@@ -558,12 +558,12 @@ async def _send_batch_to_admin(
                 read_timeout=120,
             )
         except Exception as e:
-            logger.error(f"Не удалось отправить изображение админу {admin_id}: {e}")
+            logger.error(f"Failed to send image to administrator {admin_id}: {e}")
         return
 
-    # 2+ картинок — MediaGroup + отдельное сообщение с кнопками
+    # Two or more images: MediaGroup plus a separate button message.
     media = [
-        InputMediaPhoto(media=io.BytesIO(img_bytes), caption=f"Вариант {i + 1}")
+        InputMediaPhoto(media=io.BytesIO(img_bytes), caption=f"Option {i + 1}")
         for i, img_bytes in enumerate(images)
     ]
     try:
@@ -574,25 +574,27 @@ async def _send_batch_to_admin(
             read_timeout=120,
         )
     except Exception as e:
-        logger.error(f"Не удалось отправить MediaGroup админу {admin_id}: {e}")
+        logger.error(f"Failed to send MediaGroup to administrator {admin_id}: {e}")
         return
 
     try:
         await context.bot.send_message(
             chat_id=admin_id,
             text=(
-                f"🤖 NanaBananaPro сгенерировал {len(images)} варианта для заказа #{order_id}.\n\n"
-                f"Промпт:\n{prompt[:3000]}"
+                f"🤖 NanaBananaPro generated {len(images)} options for order #{order_id}.\n\n"
+                f"Prompt:\n{prompt[:3000]}"
             ),
             reply_markup=keyboard,
         )
     except Exception as e:
-        logger.error(f"Не удалось отправить кнопки управления админу {admin_id}: {e}")
+        logger.error(f"Failed to send control buttons to administrator {admin_id}: {e}")
 
 
 async def _process_payment_confirmed(context, order_id: int, admin_ids: list[int]) -> None:
-    """Генерирует промпт, пробует авто-генерацию и отправляет результат админам.
-    Уведомление клиента — ответственность вызывателя."""
+    """Generate a prompt, attempt auto-generation, and send the result to admins.
+
+    The caller is responsible for notifying the client.
+    """
     order = db.get_order(order_id)
 
     ref_bytes: bytes | None = None
@@ -604,7 +606,7 @@ async def _process_payment_confirmed(context, order_id: int, admin_ids: list[int
                 resp.raise_for_status()
                 ref_bytes = resp.content
         except Exception as ref_e:
-            logger.warning(f"Не удалось скачать референс заказа #{order_id}: {ref_e}")
+            logger.warning(f"Failed to download reference for order #{order_id}: {ref_e}")
 
     try:
         prompt = await _call_engineer(order["description"], ref_bytes)
@@ -612,7 +614,7 @@ async def _process_payment_confirmed(context, order_id: int, admin_ids: list[int
         db.update_status(order_id, "prompt_ready")
         db.save_message(order_id, "assistant", prompt)
     except Exception as eng_e:
-        logger.warning(f"Engineer Agent упал (заказ #{order_id}), используем описание клиента как фолбэк: {eng_e}")
+        logger.warning(f"Engineer Agent failed (order #{order_id}); using client description as fallback: {eng_e}")
         prompt = order["description"]
 
     images = await _generate_image(prompt, reference_bytes=ref_bytes)
@@ -621,7 +623,7 @@ async def _process_payment_confirmed(context, order_id: int, admin_ids: list[int
 
 
 async def _notify_pipeline_failure(context, order_id: int) -> None:
-    """Уведомляет клиента об ошибке генерации. После MAX_CLIENT_RETRIES — эскалирует к админу."""
+    """Notify the client about a generation error and escalate after retries."""
     order = db.get_order(order_id)
     if not order:
         return
@@ -631,70 +633,70 @@ async def _notify_pipeline_failure(context, order_id: int) -> None:
 
     if count <= MAX_CLIENT_RETRIES:
         retry_keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔄 Попробовать ещё раз", callback_data=f"client_retry_{order_id}"),
+            InlineKeyboardButton("🔄 Try again", callback_data=f"client_retry_{order_id}"),
         ]])
         await context.bot.send_message(
             chat_id=order["user_id"],
             text=(
-                "⏳ Генерация задерживается из-за высокой нагрузки на серверы.\n"
-                f"Попытка {count} из {MAX_CLIENT_RETRIES} — нажмите кнопку, чтобы повторить."
+                "⏳ Generation is delayed because the servers are under heavy load.\n"
+                f"Attempt {count} of {MAX_CLIENT_RETRIES} — select the button to retry."
             ),
             reply_markup=retry_keyboard,
         )
     else:
-        # Исчерпаны все попытки — уведомляем клиента и эскалируем к админу
+        # All attempts are exhausted: notify the client and escalate to an admin.
         _pipeline_retry_counts.pop(order_id, None)
         await context.bot.send_message(
             chat_id=order["user_id"],
             text=(
-                "⚠️ К сожалению, не удалось сгенерировать изображение из-за технической ошибки.\n"
-                "Мы уже занимаемся этим — скоро свяжемся с вами лично."
+                "⚠️ Unfortunately, the image could not be generated because of a technical error.\n"
+                "We are already investigating and will contact you personally soon."
             ),
         )
         description_short = (order.get("description") or "")[:300]
-        prompt = order.get("prompt") or "не сгенерирован"
-        ref_url = order.get("reference_photo_url") or "нет"
+        prompt = order.get("prompt") or "not generated"
+        ref_url = order.get("reference_photo_url") or "none"
         manual_keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📤 Доставить клиенту", callback_data=f"deliver_{order_id}"),
+            InlineKeyboardButton("📤 Deliver to client", callback_data=f"deliver_{order_id}"),
         ]])
         for admin_id in settings.admin_ids_list:
             try:
                 await context.bot.send_message(
                     chat_id=admin_id,
                     text=(
-                        f"⚠️ Заказ #{order_id} — сбой генерации, требуется ручная обработка.\n\n"
-                        f"Клиент: @{order.get('username', '?')} (ID: {order['user_id']})\n\n"
-                        f"Описание:\n{description_short}\n\n"
-                        f"Промпт:\n{prompt[:500]}\n\n"
-                        f"Референс: {ref_url}"
+                        f"⚠️ Order #{order_id}: generation failed and requires manual handling.\n\n"
+                        f"Client: @{order.get('username', '?')} (ID: {order['user_id']})\n\n"
+                        f"Description:\n{description_short}\n\n"
+                        f"Prompt:\n{prompt[:500]}\n\n"
+                        f"Reference: {ref_url}"
                     ),
                     reply_markup=manual_keyboard,
                 )
             except Exception as e:
-                logger.error(f"Не удалось уведомить админа {admin_id} об эскалации заказа #{order_id}: {e}")
+                logger.error(f"Failed to notify administrator {admin_id} about order #{order_id} escalation: {e}")
 
 
 async def _client_retry_pipeline(query, context, order_id: int) -> None:
-    """Клиент повторно запрашивает генерацию изображения."""
+    """Handle a client's repeated request for image generation."""
     order = db.get_order(order_id)
     if not order or order["user_id"] != query.from_user.id:
-        await query.answer("Эта кнопка недоступна.", show_alert=True)
+        await query.answer("This button is unavailable.", show_alert=True)
         return
 
     await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([]))
     await context.bot.send_message(
         chat_id=query.from_user.id,
-        text="🔄 Повторяю генерацию...",
+        text="🔄 Retrying generation...",
     )
     try:
         await _process_payment_confirmed(context, order_id, settings.admin_ids_list)
-        _pipeline_retry_counts.pop(order_id, None)  # сбрасываем счётчик при успехе
+        _pipeline_retry_counts.pop(order_id, None)  # Reset the count after success.
     except Exception as e:
-        logger.error(f"Повторная ошибка генерации заказа #{order_id}: {e}")
+        logger.error(f"Repeated generation error for order #{order_id}: {e}")
         await _notify_pipeline_failure(context, order_id)
 
 
-# ─── Кнопки для админа ───────────────────────────────────────────────────────
+# ─── Administrator buttons ───────────────────────────────────────────────────
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -722,56 +724,56 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def _confirm_payment(query, context, order_id: int) -> None:
     order = db.get_order(order_id)
     if not order:
-        await query.edit_message_caption("❌ Заказ не найден", reply_markup=InlineKeyboardMarkup([]))
+        await query.edit_message_caption("❌ Order not found", reply_markup=InlineKeyboardMarkup([]))
         return
 
-    # Убираем кнопки сразу чтобы нельзя было нажать дважды
+    # Remove buttons immediately to prevent double selection.
     await query.edit_message_caption(
-        query.message.caption + "\n\n⏳ Оплата подтверждена! Генерирую промпт...",
+        query.message.caption + "\n\n⏳ Payment confirmed! Generating prompt...",
         reply_markup=InlineKeyboardMarkup([]),
     )
 
-    # Уведомляем клиента
+    # Notify the client.
     await context.bot.send_message(
         chat_id=order["user_id"],
-        text="✅ Оплата подтверждена! Готовим ваш заказ — скоро пришлём результат.",
+        text="✅ Payment confirmed! We are preparing your order and will send the result shortly.",
     )
 
     try:
         await _process_payment_confirmed(context, order_id, [query.from_user.id])
     except Exception as e:
-        logger.error(f"Ошибка генерации промпта: {e}")
+        logger.error(f"Prompt-generation error: {e}")
         await _notify_pipeline_failure(context, order_id)
 
 
 async def _reject_payment(query, context, order_id: int) -> None:
     order = db.get_order(order_id)
     if not order:
-        await query.edit_message_caption("❌ Заказ не найден", reply_markup=InlineKeyboardMarkup([]))
+        await query.edit_message_caption("❌ Order not found", reply_markup=InlineKeyboardMarkup([]))
         return
 
     db.update_status(order_id, "cancelled")
     await query.edit_message_caption(
-        query.message.caption + "\n\n❌ Оплата отклонена",
+        query.message.caption + "\n\n❌ Payment rejected",
         reply_markup=InlineKeyboardMarkup([]),
     )
     await context.bot.send_message(
         chat_id=order["user_id"],
         text=(
-            "❌ К сожалению, не смогли подтвердить оплату.\n"
-            "Пожалуйста, свяжитесь с нами или попробуйте ещё раз /start"
+            "❌ Unfortunately, we could not confirm the payment.\n"
+            "Please contact us or try again with /start"
         ),
     )
 
 
 async def _start_delivery(query, context, order_id: int) -> None:
     admin_id = query.from_user.id
-    pending_auto_images.pop(order_id, None)  # очищаем авто-изображение если было
+    pending_auto_images.pop(order_id, None)  # Clear the auto-generated image if present.
     pending_deliveries[admin_id] = order_id
     db.set_delivery_admin(order_id, admin_id)
-    suffix = "\n\n📤 Отправь изображение следующим сообщением:"
+    suffix = "\n\n📤 Send the image in your next message:"
     if query.message.photo:
-        # Кнопка "Заменить вручную" была на фото-сообщении — редактируем caption
+        # The manual-replacement button was on a photo message, so edit its caption.
         await query.edit_message_caption(
             (query.message.caption or "") + suffix,
             reply_markup=InlineKeyboardMarkup([]),
@@ -784,24 +786,24 @@ async def _start_delivery(query, context, order_id: int) -> None:
 
 
 async def _auto_deliver(query, context, order_id: int) -> None:
-    """Доставляет авто-сгенерированное изображение клиенту."""
+    """Deliver an automatically generated image to the client."""
     order = db.get_order(order_id)
     if not order:
-        await query.edit_message_caption("❌ Заказ не найден", reply_markup=InlineKeyboardMarkup([]))
+        await query.edit_message_caption("❌ Order not found", reply_markup=InlineKeyboardMarkup([]))
         return
 
     file_id = pending_auto_images.pop(order_id, None)
     full_quality_bytes = pending_full_quality.pop(order_id, None)
     if not file_id:
-        # После рестарта бота — fallback на ручной флоу
-        suffix = "\n\n⚠️ Изображение не найдено в памяти. Доставь вручную."
+        # After a bot restart, fall back to manual delivery.
+        suffix = "\n\n⚠️ Image is not available in memory. Deliver it manually."
         base = (query.message.caption or "")
         if len(base) + len(suffix) > 1024:
             base = base[:1024 - len(suffix)]
         await query.edit_message_caption(
             base + suffix,
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📤 Доставить вручную", callback_data=f"deliver_{order_id}"),
+                InlineKeyboardButton("📤 Deliver manually", callback_data=f"deliver_{order_id}"),
             ]]),
         )
         return
@@ -811,15 +813,15 @@ async def _auto_deliver(query, context, order_id: int) -> None:
         if len(order.get("description") or "") > 200:
             description_short += "…"
         auto_delivery_caption = (
-            f"🎨 Готово! Ваша визуализация готова.\n\n"
-            f"✏️ Задача: {description_short}\n\n"
-            f"Хотите новый заказ? Жмите /start 🚀"
+            f"🎨 Done! Your visualization is ready.\n\n"
+            f"✏️ Request: {description_short}\n\n"
+            f"Want a new order? Select /start 🚀"
         )
         client_keyboard = None
         if full_quality_bytes:
             pending_full_quality[order_id] = full_quality_bytes
             client_keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📥 Скачать в полном 2K", callback_data=f"download_{order_id}"),
+                InlineKeyboardButton("📥 Download in full 2K", callback_data=f"download_{order_id}"),
             ]])
         await context.bot.send_photo(
             chat_id=order["user_id"],
@@ -829,30 +831,30 @@ async def _auto_deliver(query, context, order_id: int) -> None:
         )
         db.update_status(order_id, "delivered")
         db.clear_delivery_admin(order_id)
-        suffix = f"\n\n✅ Заказ #{order_id} доставлен клиенту (авто)."
+        suffix = f"\n\n✅ Order #{order_id} delivered to the client automatically."
         base = (query.message.caption or "")
         if len(base) + len(suffix) > 1024:
             base = base[:1024 - len(suffix)]
         await query.edit_message_caption(base + suffix, reply_markup=InlineKeyboardMarkup([]))
     except Exception as e:
-        logger.error(f"Ошибка авто-доставки заказа #{order_id}: {e}")
+        logger.error(f"Automatic-delivery error for order #{order_id}: {e}")
         try:
             await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📤 Доставить вручную", callback_data=f"deliver_{order_id}"),
+                InlineKeyboardButton("📤 Deliver manually", callback_data=f"deliver_{order_id}"),
             ]]))
         except Exception:
             pass
         await context.bot.send_message(
             chat_id=query.from_user.id,
-            text=f"❌ Ошибка авто-доставки заказа #{order_id}: {e}",
+            text=f"❌ Automatic-delivery error for order #{order_id}: {e}",
         )
 
 
 async def _send_full_quality(query, context, order_id: int) -> None:
-    """Отправляет клиенту изображение в полном качестве по нажатию кнопки."""
+    """Send a full-quality image to the client after selecting the button."""
     data = pending_full_quality.pop(order_id, None)
     if data is None:
-        await query.answer("Файл недоступен — обратитесь к администратору.", show_alert=True)
+        await query.answer("The file is unavailable. Please contact an administrator.", show_alert=True)
         return
     await query.answer()
     try:
@@ -861,40 +863,40 @@ async def _send_full_quality(query, context, order_id: int) -> None:
                 chat_id=query.from_user.id,
                 document=io.BytesIO(data),
                 filename=f"order_{order_id}_2K.jpg",
-                caption="📎 Ваша визуализация в полном 2K качестве.",
+                caption="📎 Your visualization in full 2K quality.",
                 write_timeout=120,
                 read_timeout=120,
             )
         else:
-            # file_id документа (ручная доставка)
+            # Document file_id (manual delivery).
             await context.bot.send_document(
                 chat_id=query.from_user.id,
                 document=data,
-                caption="📎 Ваша визуализация в полном качестве.",
+                caption="📎 Your visualization in full quality.",
             )
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([]))
     except Exception as e:
-        logger.error(f"Ошибка отправки полного качества заказа #{order_id}: {e}")
-        await query.answer("Не удалось отправить файл. Попробуйте позже.", show_alert=True)
+        logger.error(f"Full-quality delivery error for order #{order_id}: {e}")
+        await query.answer("Unable to send the file. Please try again later.", show_alert=True)
 
 
 async def _regenerate_image(query, context, order_id: int) -> None:
-    """Регенерирует 3 новых варианта по сохранённому промпту заказа."""
-    # Убираем кнопки сразу — защита от двойного нажатия
+    """Regenerate three new options with the stored order prompt."""
+    # Remove buttons immediately to prevent double selection.
     try:
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([]))
     except Exception:
         pass
     await context.bot.send_message(
         chat_id=query.from_user.id,
-        text="🔄 Генерирую новые варианты...",
+        text="🔄 Generating new options...",
     )
 
     order = db.get_order(order_id)
     if not order:
         await context.bot.send_message(
             chat_id=query.from_user.id,
-            text=f"❌ Заказ #{order_id} не найден.",
+            text=f"❌ Order #{order_id} was not found.",
         )
         return
 
@@ -908,14 +910,14 @@ async def _regenerate_image(query, context, order_id: int) -> None:
                 resp.raise_for_status()
                 ref_bytes = resp.content
         except Exception as e:
-            logger.warning(f"Не удалось скачать референс для регенерации заказа #{order_id}: {e}")
+            logger.warning(f"Failed to download reference to regenerate order #{order_id}: {e}")
 
     images = await _generate_image(prompt, reference_bytes=ref_bytes)
     await _send_batch_to_admin(context, query.from_user.id, images, prompt, order_id)
 
 
 async def _cancel_order_admin(query, context, order_id: int) -> None:
-    """Отменяет заказ и уведомляет клиента."""
+    """Cancel an order and notify the client."""
     order = db.get_order(order_id)
     if order and order.get("status") != "cancelled":
         db.update_status(order_id, "cancelled")
@@ -925,32 +927,32 @@ async def _cancel_order_admin(query, context, order_id: int) -> None:
         try:
             await context.bot.send_message(
                 chat_id=order["user_id"],
-                text="❌ К сожалению, ваш заказ был отменён. Для нового заказа нажмите /start.",
+                text="❌ Unfortunately, your order was cancelled. Select /start to create a new order.",
             )
         except Exception as e:
-            logger.error(f"Не удалось уведомить клиента об отмене заказа #{order_id}: {e}")
+            logger.error(f"Failed to notify client about cancellation of order #{order_id}: {e}")
     try:
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([]))
     except Exception:
         pass
     await context.bot.send_message(
         chat_id=query.from_user.id,
-        text=f"❌ Заказ #{order_id} отменён.",
+        text=f"❌ Order #{order_id} cancelled.",
     )
 
 
-# ─── Доставка: админ присылает фото ──────────────────────────────────────────
+# ─── Delivery: administrator sends an image ───────────────────────────────────
 
 async def handle_admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     admin_id = update.message.from_user.id
 
     if admin_id not in pending_deliveries:
-        return  # Фото не для доставки — игнорируем
+        return  # This photo is not for delivery; ignore it.
 
     order_id = pending_deliveries.pop(admin_id)
     order = db.get_order(order_id)
     if not order:
-        await update.message.reply_text("❌ Заказ не найден")
+        await update.message.reply_text("❌ Order not found")
         return
 
     is_document = update.message.document is not None
@@ -959,9 +961,9 @@ async def handle_admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if len(order.get("description") or "") > 200:
         description_short += "…"
     delivery_caption = (
-        f"🎨 Готово! Ваша визуализация готова.\n\n"
-        f"✏️ Задача: {description_short}\n\n"
-        f"Хотите новый заказ? Жмите /start 🚀"
+        f"🎨 Done! Your visualization is ready.\n\n"
+        f"✏️ Request: {description_short}\n\n"
+        f"Want a new order? Select /start 🚀"
     )
     if is_document:
         await context.bot.send_document(
@@ -977,10 +979,10 @@ async def handle_admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
     db.update_status(order_id, "delivered")
     db.clear_delivery_admin(order_id)
-    await update.message.reply_text(f"✅ Заказ #{order_id} доставлен клиенту!")
+    await update.message.reply_text(f"✅ Order #{order_id} delivered to the client!")
 
 
-# ─── Claude: Vision Agent — проверка скриншота оплаты ────────────────────────
+# ─── Claude: Vision Agent — payment-screenshot verification ──────────────────
 
 async def _verify_payment(
     image_bytes: bytes,
@@ -989,9 +991,11 @@ async def _verify_payment(
     payment_card: str,
     payment_phone: str,
 ) -> dict | None:
-    """Анализирует скриншот оплаты через Claude Vision.
-    Проверяет сумму, статус и реквизиты получателя.
-    Возвращает dict с результатом или None при любой ошибке."""
+    """Analyze a payment screenshot with Claude Vision.
+
+    Check the amount, status, and recipient details. Return a result dictionary
+    or None if any error occurs.
+    """
     client = _get_anthropic_client()
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
     image_media_type = _detect_image_media_type(image_bytes)
@@ -1013,22 +1017,22 @@ async def _verify_payment(
                     "type": "image",
                     "source": {"type": "base64", "media_type": image_media_type, "data": image_b64},
                 },
-                {"type": "text", "text": "Проанализируй скриншот и верни JSON."},
+                {"type": "text", "text": "Analyze the screenshot and return JSON."},
             ],
         }],
     )
     text = response.content[0].text.strip()
     match = re.search(r'\{[\s\S]+\}', text)
     if not match:
-        logger.warning(f"Vision Agent не вернул JSON. Ответ модели: {text[:300]!r}")
+        logger.warning(f"Vision Agent did not return JSON. Model response: {text[:300]!r}")
         return None
     return json.loads(match.group(0))
 
 
-# ─── Claude: генерация промпта ────────────────────────────────────────────────
+# ─── Claude: prompt generation ────────────────────────────────────────────────
 
 async def _call_engineer(description: str, reference_bytes: bytes | None = None) -> str:
-    """Engineer Agent: генерирует детальный промпт для Nano Banana Pro."""
+    """Engineer Agent: generate a detailed prompt for Nano Banana Pro."""
     client = _get_anthropic_client()
     system_prompt = get_agent_prompt("engineer")
 
@@ -1074,11 +1078,14 @@ async def _generate_prompt(description: str) -> str:
     return message.content[0].text
 
 
-# ─── Gemini: генерация изображения (NanaBananaPro) ───────────────────────────
+# ─── Gemini: image generation (NanaBananaPro) ─────────────────────────────────
 
 async def _generate_image(prompt: str, reference_bytes: bytes | None = None, count: int = 3) -> list[bytes]:
-    """NanaBananaPro (gemini-3-pro-image-preview) → список байт изображений.
-    Генерирует count вариантов параллельно. Пустой список при ошибке или отсутствии ключа."""
+    """Return image bytes from NanaBananaPro (gemini-3-pro-image-preview).
+
+    Generate ``count`` options in parallel. Return an empty list on error or
+    when no API key is configured.
+    """
     client = _get_gemini_client()
     if client is None:
         return []
@@ -1112,17 +1119,17 @@ async def _generate_image(prompt: str, reference_bytes: bytes | None = None, cou
         try:
             return await asyncio.to_thread(_sync_call)
         except Exception as e:
-            logger.error(f"Gemini image generation ошибка: {e}")
+            logger.error(f"Gemini image-generation error: {e}")
             return None
 
     results = await asyncio.gather(*[_generate_one() for _ in range(count)], return_exceptions=True)
     return [r for r in results if isinstance(r, bytes)]
 
 
-# ─── Очистка старых фото-референсов ──────────────────────────────────────────
+# ─── Old reference-photo cleanup ──────────────────────────────────────────────
 
 async def _cleanup_old_reference_photos(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Удаляет фото-референсы из Supabase Storage старше 7 дней."""
+    """Delete reference photos older than seven days from Supabase Storage."""
     try:
         old_orders = db.get_orders_with_old_reference_photos(days=7)
         if not old_orders:
@@ -1136,45 +1143,45 @@ async def _cleanup_old_reference_photos(context: ContextTypes.DEFAULT_TYPE) -> N
             try:
                 db.delete_reference_photo_from_storage(filename)
                 db.update_reference_photo(order["id"], None)
-                logger.info(f"Удалён референс заказа #{order['id']}: {filename}")
+                logger.info(f"Deleted reference for order #{order['id']}: {filename}")
             except Exception as e:
-                logger.error(f"Ошибка удаления референса #{order['id']}: {e}")
+                logger.error(f"Error deleting reference for order #{order['id']}: {e}")
     except Exception as e:
-        logger.error(f"Ошибка плановой очистки референсов: {e}")
+        logger.error(f"Scheduled reference cleanup error: {e}")
 
 
-# ─── Инициализация при старте ─────────────────────────────────────────────────
+# ─── Startup initialization ───────────────────────────────────────────────────
 
 async def post_init(application: Application) -> None:
-    """Устанавливает меню команд и восстанавливает состояние после рестарта."""
+    """Set the command menu and restore state after a restart."""
     await application.bot.set_my_commands([
-        BotCommand("start",  "Заказать AI-изображение"),
-        BotCommand("orders", "Последние заказы (для админа)"),
-        BotCommand("cancel", "Отменить текущий заказ"),
+        BotCommand("start",  "Order an AI image"),
+        BotCommand("orders", "Latest orders (admin only)"),
+        BotCommand("cancel", "Cancel current order"),
     ])
 
-    # Восстанавливаем pending_deliveries из БД после рестарта
+    # Restore pending_deliveries from the database after a restart.
     try:
         recovered = db.get_pending_deliveries()
         if recovered:
             pending_deliveries.update(recovered)
-            logger.info(f"Восстановлено {len(recovered)} доставок из БД: {recovered}")
+            logger.info(f"Restored {len(recovered)} deliveries from the database: {recovered}")
     except Exception as e:
-        logger.error(f"Не удалось восстановить состояние доставок: {e}", exc_info=True)
+        logger.error(f"Failed to restore delivery state: {e}", exc_info=True)
 
-    # Запускаем ежедневную очистку фото-референсов старше 7 дней
+    # Schedule daily cleanup for reference photos older than seven days.
     if application.job_queue:
         application.job_queue.run_repeating(
             _cleanup_old_reference_photos,
-            interval=86400,   # каждые 24 часа
-            first=60,         # первый запуск через 60 секунд после старта
+            interval=86400,   # Every 24 hours.
+            first=60,         # First run 60 seconds after startup.
         )
 
 
-# ─── Listener Agent: сообщения вне активного диалога ─────────────────────────
+# ─── Listener Agent: messages outside active conversations ────────────────────
 
 async def handle_unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отвечает на сообщения клиента вне ConversationHandler через Listener Agent."""
+    """Reply to client messages outside ConversationHandler via Listener Agent."""
     text = update.message.text or ""
     result = await _call_listener(text)
 
@@ -1186,27 +1193,27 @@ async def handle_unknown_message(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(_listener_response(msg_type))
 
 
-# ─── Обработчик необработанных ошибок ────────────────────────────────────────
+# ─── Unhandled-error handler ──────────────────────────────────────────────────
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Логирует необработанные исключения и уведомляет всех админов."""
+    """Log unhandled exceptions and notify all administrators."""
     import telegram.error as tg_err
     if isinstance(context.error, tg_err.TimedOut):
-        logger.warning(f"Сетевая ошибка (игнорируем): {context.error}")
+        logger.warning(f"Network error (ignored): {context.error}")
         return
-    logger.error("Необработанная ошибка:", exc_info=context.error)
+    logger.error("Unhandled error:", exc_info=context.error)
     error_text = (
-        f"⚠️ Критическая ошибка бота:\n"
+        f"⚠️ Critical bot error:\n"
         f"{type(context.error).__name__}: {context.error}"
     )
     for admin_id in settings.admin_ids_list:
         try:
             await context.bot.send_message(chat_id=admin_id, text=error_text)
         except Exception:
-            pass  # Не падаем, если и уведомление не прошло
+            pass  # Do not fail if this notification also fails.
 
 
-# ─── Сборка приложения ────────────────────────────────────────────────────────
+# ─── Application construction ─────────────────────────────────────────────────
 
 def build_app() -> Application:
     persistence = PicklePersistence(filepath="bot_persistence.pkl")
@@ -1223,7 +1230,7 @@ def build_app() -> Application:
         .build()
     )
 
-    # Диалог с клиентом
+    # Client conversation.
     conv = ConversationHandler(
         name="main",
         persistent=True,
@@ -1242,13 +1249,13 @@ def build_app() -> Application:
     )
     app.add_handler(conv)
 
-    # Команды для админа
+    # Administrator commands.
     app.add_handler(CommandHandler("orders", cmd_orders))
 
-    # Кнопки для админа
+    # Administrator buttons.
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    # Фото от админа (доставка)
+    # Image from administrator (delivery).
     app.add_handler(
         MessageHandler(
             (filters.PHOTO | filters.Document.IMAGE) & filters.User(user_id=settings.admin_ids_list),
@@ -1256,7 +1263,7 @@ def build_app() -> Application:
         )
     )
 
-    # Listener Agent: catch-all для сообщений вне активного диалога
+    # Listener Agent: catch-all for messages outside active conversations.
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unknown_message))
 
     app.add_error_handler(error_handler)

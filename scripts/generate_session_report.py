@@ -1,14 +1,12 @@
-"""
-Генератор отчёта по сессии.
+"""Session report generator.
 
-Использование:
-    python scripts/generate_session_report.py           # последние 5 коммитов
-    python scripts/generate_session_report.py --n 10    # последние 10 коммитов
-    python scripts/generate_session_report.py --since "2026-02-22"  # с даты
-    python scripts/generate_session_report.py --save    # сохранить в logs/
+Usage:
+    python scripts/generate_session_report.py           # latest 5 commits
+    python scripts/generate_session_report.py --n 10    # latest 10 commits
+    python scripts/generate_session_report.py --since "2026-02-22"  # since date
+    python scripts/generate_session_report.py --save    # save to logs/
 
-Выводит: список коммитов с датами, изменёнными файлами и статистикой.
-Помогает отследить, что и когда менялось в проекте.
+Prints commits with their dates, changed files, and statistics.
 """
 
 import subprocess
@@ -17,7 +15,7 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
-# Windows: переключить stdout на UTF-8
+# Windows: switch stdout to UTF-8
 if sys.platform == "win32":
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -73,7 +71,7 @@ def get_commit_files(commit_hash: str) -> list[dict]:
 
 
 def get_diff_summary(commit_hash: str) -> tuple[int, int]:
-    """Возвращает (insertions, deletions)."""
+    """Return (insertions, deletions)."""
     raw = run_git(["show", "--shortstat", "--pretty=format:", commit_hash])
     insertions = deletions = 0
     for part in raw.split(","):
@@ -95,10 +93,10 @@ def format_report(commits: list[dict], show_files: bool = True) -> str:
 
     lines = [
         "=" * 60,
-        f"  ОТЧЁТ ПО ПРОЕКТУ",
-        f"  Сгенерирован: {now}",
-        f"  Ветка: {branch}",
-        f"  Коммитов в отчёте: {len(commits)}",
+        f"  PROJECT REPORT",
+        f"  Generated: {now}",
+        f"  Branch: {branch}",
+        f"  Commits in report: {len(commits)}",
         "=" * 60,
         "",
     ]
@@ -114,7 +112,7 @@ def format_report(commits: list[dict], show_files: bool = True) -> str:
         lines += [
             f"[{i}] {commit['date'][:16]}  {commit['hash']}",
             f"    {commit['message']}",
-            f"    +{insertions} строк добавлено, -{deletions} удалено",
+            f"    +{insertions} lines added, -{deletions} removed",
         ]
 
         if show_files:
@@ -126,7 +124,7 @@ def format_report(commits: list[dict], show_files: bool = True) -> str:
 
     lines += [
         "-" * 60,
-        f"  ИТОГО: +{total_insertions} добавлено, -{total_deletions} удалено",
+        f"  TOTAL: +{total_insertions} added, -{total_deletions} removed",
         "-" * 60,
     ]
 
@@ -134,16 +132,16 @@ def format_report(commits: list[dict], show_files: bool = True) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Генератор отчёта по сессии")
-    parser.add_argument("--n", type=int, default=5, help="Количество последних коммитов (по умолчанию 5)")
-    parser.add_argument("--since", type=str, default=None, help="Показать коммиты с даты (напр. 2026-02-22)")
-    parser.add_argument("--save", action="store_true", help="Сохранить отчёт в logs/")
-    parser.add_argument("--no-files", action="store_true", help="Не показывать список файлов")
+    parser = argparse.ArgumentParser(description="Session report generator")
+    parser.add_argument("--n", type=int, default=5, help="Number of latest commits (default: 5)")
+    parser.add_argument("--since", type=str, default=None, help="Show commits since date (for example, 2026-02-22)")
+    parser.add_argument("--save", action="store_true", help="Save the report to logs/")
+    parser.add_argument("--no-files", action="store_true", help="Do not show the file list")
     args = parser.parse_args()
 
     commits = get_commits(n=args.n, since=args.since)
     if not commits:
-        print("Коммиты не найдены.")
+        print("No commits found.")
         sys.exit(0)
 
     report = format_report(commits, show_files=not args.no_files)
@@ -154,7 +152,7 @@ def main():
         logs_dir.mkdir(exist_ok=True)
         filename = logs_dir / f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         filename.write_text(report, encoding="utf-8")
-        print(f"\nОтчёт сохранён: {filename}")
+        print(f"\nReport saved: {filename}")
 
 
 if __name__ == "__main__":

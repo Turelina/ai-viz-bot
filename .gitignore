@@ -41,11 +41,11 @@ env/
 
 # Logs
 *.log
-# Игнорируем все логи, но оставляем структуру папок и документацию
+# Ignore all logs while retaining directory structure and documentation
 logs/**/*.json
 logs/**/*.log
 logs/**/*.txt
-# Но коммитим README и шаблоны
+# Still commit READMEs and templates
 !logs/README.md
 !logs/COMMON_ISSUES.md
 !logs/error_template.json

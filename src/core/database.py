@@ -1,7 +1,4 @@
-"""
-Работа с базой данных Supabase.
-Две таблицы: orders и messages.
-"""
+"""Supabase database access for the orders and messages tables."""
 from supabase import create_client, Client
 from config.settings import settings
 
@@ -17,7 +14,7 @@ class Database:
         return self._client
 
     def reset(self) -> None:
-        """Сбрасывает клиент — при следующем обращении будет пересоздан."""
+        """Reset the client so it is recreated on the next access."""
         self._client = None
 
     def create_order(self, user_id: int, username: str, description: str) -> dict:
@@ -49,22 +46,22 @@ class Database:
         )
         return result.data or []
 
-    # ── Доставка: персистентное состояние ────────────────────────────────────
+    # ── Delivery: persistent state ────────────────────────────────────────────
 
     def set_delivery_admin(self, order_id: int, admin_id: int) -> None:
-        """Сохраняет, какой админ начал доставку этого заказа."""
+        """Save the administrator who started delivery for this order."""
         self.client.table("orders").update(
             {"delivery_admin_id": admin_id}
         ).eq("id", order_id).execute()
 
     def clear_delivery_admin(self, order_id: int) -> None:
-        """Сбрасывает delivery_admin_id после завершения доставки."""
+        """Clear delivery_admin_id after delivery completes."""
         self.client.table("orders").update(
             {"delivery_admin_id": None}
         ).eq("id", order_id).execute()
 
     def get_pending_deliveries(self) -> dict[int, int]:
-        """Возвращает {admin_id: order_id} для заказов в статусе доставки."""
+        """Return {admin_id: order_id} for orders in delivery status."""
         result = (
             self.client.table("orders")
             .select("id, delivery_admin_id")
@@ -74,10 +71,10 @@ class Database:
         )
         return {row["delivery_admin_id"]: row["id"] for row in (result.data or [])}
 
-    # ── Сообщения: история переписки ─────────────────────────────────────────
+    # ── Messages: conversation history ────────────────────────────────────────
 
     def save_message(self, order_id: int, role: str, content: str) -> None:
-        """Сохраняет сообщение в историю переписки по заказу."""
+        """Save a message to an order's conversation history."""
         self.client.table("messages").insert({
             "order_id": order_id,
             "role": role,
@@ -85,7 +82,7 @@ class Database:
         }).execute()
 
     def get_messages(self, order_id: int) -> list[dict]:
-        """Возвращает историю сообщений по заказу в хронологическом порядке."""
+        """Return an order's messages in chronological order."""
         result = (
             self.client.table("messages")
             .select("role, content, created_at")
@@ -95,12 +92,14 @@ class Database:
         )
         return result.data or []
 
-    # ── Фото-референсы ────────────────────────────────────────────────────────
+    # ── Reference photos ──────────────────────────────────────────────────────
 
     def upload_reference_photo(self, photo_bytes: bytes, username: str, order_id: int, index: int = 1) -> str:
-        """Загружает фото-референс в Supabase Storage.
-        Путь: {username}/{order_id}.jpg (или {order_id}_2.jpg для доп. фото).
-        Возвращает signed URL на 1 год."""
+        """Upload a reference photo to Supabase Storage.
+
+        Path: {username}/{order_id}.jpg, or {order_id}_2.jpg for an additional
+        photo. Return a signed URL valid for one year.
+        """
         suffix = f"_{index}" if index > 1 else ""
         filename = f"{username}/{order_id}{suffix}.jpg"
         self.client.storage.from_("reference-photos").upload(
@@ -109,18 +108,18 @@ class Database:
             file_options={"content-type": "image/jpeg"},
         )
         result = self.client.storage.from_("reference-photos").create_signed_url(
-            filename, expires_in=31536000  # 1 год
+            filename, expires_in=31536000  # One year.
         )
         return result["signedURL"]
 
     def update_reference_photo(self, order_id: int, url: str | None) -> None:
-        """Сохраняет или сбрасывает URL фото-референса к заказу."""
+        """Save or clear an order's reference-photo URL."""
         self.client.table("orders").update(
             {"reference_photo_url": url}
         ).eq("id", order_id).execute()
 
     def get_orders_with_old_reference_photos(self, days: int = 7) -> list[dict]:
-        """Возвращает заказы с референсом старше N дней."""
+        """Return orders whose reference photo is older than N days."""
         from datetime import datetime, timedelta
         cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
         result = (
@@ -133,7 +132,7 @@ class Database:
         return result.data or []
 
     def delete_reference_photo_from_storage(self, filename: str) -> None:
-        """Удаляет файл из Supabase Storage."""
+        """Delete a file from Supabase Storage."""
         self.client.storage.from_("reference-photos").remove([filename])
 
 
